@@ -7,8 +7,7 @@ namespace ItSupport.Api.Identity;
 
 /// <summary>
 /// Reads the caller's profile from Microsoft Graph on behalf of the caller
-/// (on-behalf-of flow with delegated <c>User.Read</c>). The real path runs in
-/// This class is verified by build only.
+/// (on-behalf-of flow with delegated <c>User.Read</c>).
 /// </summary>
 public sealed class GraphUserDirectory(IDownstreamApi downstreamApi) : IUserDirectory
 {

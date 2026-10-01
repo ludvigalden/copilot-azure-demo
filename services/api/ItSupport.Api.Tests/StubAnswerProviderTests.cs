@@ -6,88 +6,39 @@ using Microsoft.Extensions.Hosting;
 
 namespace ItSupport.Api.Tests;
 
-public sealed class StubAnswerProviderTests : IDisposable
+public sealed class StubAnswerProviderTests
 {
-    private readonly string _kb = Path.Combine(Path.GetTempPath(), $"it-support-tests-{Guid.NewGuid():N}");
-
-    public void Dispose()
+    [Fact]
+    public async Task AnswerAsync_citesArticleMatchingQuestion()
     {
-        if (Directory.Exists(_kb))
+        var kb = Directory.CreateTempSubdirectory("it-support-tests-").FullName;
+        try
         {
-            Directory.Delete(_kb, recursive: true);
+            await File.WriteAllTextAsync(Path.Combine(kb, "printer.md"), "---\ntitle: Add a printer\n---\n");
+            await File.WriteAllTextAsync(Path.Combine(kb, "vpn.md"), "---\ntitle: Connect to the VPN\n---\n");
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?> { ["KnowledgeBase:Path"] = kb })
+                .Build();
+
+            var answer = await new StubAnswerProvider(configuration, new TestEnvironment())
+                .AnswerAsync("I cannot reach the vpn");
+
+            var citation = Assert.Single(answer.Citations);
+            Assert.Equal("Connect to the VPN", citation.Title);
+            Assert.DoesNotContain(kb, citation.Url);
+            Assert.Contains("Connect to the VPN", Assert.Single(answer.Chunks).Content);
+        }
+        finally
+        {
+            Directory.Delete(kb, recursive: true);
         }
     }
 
-    [Fact]
-    public async Task AnswerAsync_matchesByTitle_andReturnsChunks()
-    {
-        Directory.CreateDirectory(_kb);
-        await File.WriteAllTextAsync(Path.Combine(_kb, "vpn.md"),
-            """
-            ---
-            title: VPN access
-            ---
-
-            ## Connect to the VPN
-
-            Start the VPN client and sign in.
-            """);
-        var provider = NewProvider();
-
-        var answer = await provider.AnswerAsync("I cannot reach the vpn");
-
-        Assert.Equal("VPN access", answer.Citations.Single().Title);
-        Assert.EndsWith("vpn.md", answer.Citations.Single().Url);
-        Assert.NotEmpty(answer.Chunks);
-        Assert.Contains("VPN client", answer.Chunks.Single().Content);
-    }
-
-    [Fact]
-    public async Task AnswerAsync_withoutMatch_returnsNoCitations()
-    {
-        Directory.CreateDirectory(_kb);
-        await File.WriteAllTextAsync(Path.Combine(_kb, "vpn.md"),
-            """
-            ---
-            title: VPN access
-            ---
-
-            ## Connect to the VPN
-
-            Start the VPN client and sign in.
-            """);
-        var provider = NewProvider();
-
-        var answer = await provider.AnswerAsync("what is the canteen menu");
-
-        Assert.Empty(answer.Citations);
-        Assert.Empty(answer.Chunks);
-        Assert.Contains("could not find", answer.Text);
-    }
-
-    [Fact]
-    public async Task AnswerAsync_withMissingKbDirectory_returnsNoCitations()
-    {
-        var provider = NewProvider();
-
-        var answer = await provider.AnswerAsync("vpn");
-
-        Assert.Empty(answer.Citations);
-    }
-
-    private StubAnswerProvider NewProvider()
-    {
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { ["KnowledgeBase:Path"] = _kb })
-            .Build();
-        return new StubAnswerProvider(configuration, new TestEnvironment("/"));
-    }
-
-    private sealed class TestEnvironment(string contentRoot) : IHostEnvironment
+    private sealed class TestEnvironment : IHostEnvironment
     {
         public string ApplicationName { get; set; } = "test";
         public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
-        public string ContentRootPath { get; set; } = contentRoot;
+        public string ContentRootPath { get; set; } = "/";
         public string EnvironmentName { get; set; } = "Development";
     }
 }

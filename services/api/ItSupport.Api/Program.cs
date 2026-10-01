@@ -58,23 +58,14 @@ else
 {
     builder.Services.AddAzureClients(tickets =>
     {
-        var section = cfg.GetSection("Tickets");
-        if (!string.IsNullOrEmpty(section.Value))
-        {
-            tickets.AddTableServiceClient(section.Value);
-        }
-        else
-        {
-            tickets.AddTableServiceClient(section);
-        }
-
+        tickets.AddTableServiceClient(cfg.GetSection("Tickets"));
         tickets.UseCredential(new DefaultAzureCredential());
     });
     builder.Services.AddSingleton<ITicketService, TableTicketService>();
 }
 
-// Answers: the stub is Development-only.
-// above this.
+// Answers: the stub is Development-only; outside Development an answer
+// provider must be configured.
 if (dev && string.IsNullOrEmpty(cfg["OpenAI:Endpoint"]))
 {
     builder.Services.AddSingleton<IAnswerProvider, StubAnswerProvider>();

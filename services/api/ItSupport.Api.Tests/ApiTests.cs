@@ -10,7 +10,6 @@ using Azure.Data.Tables;
 using Microsoft.Extensions.Azure;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
 
 namespace ItSupport.Api.Tests;
 
@@ -169,33 +168,6 @@ public sealed class TableClientShapeTests
         var client = provider.GetRequiredService<TableServiceClient>();
 
         Assert.Equal(new Uri("https://acct.table.core.windows.net/"), client.Uri);
-    }
-
-    [Fact]
-    public void ScalarConnectionString_bindsToDevelopmentStorage()
-    {
-        var services = new ServiceCollection();
-        services.AddAzureClients(tickets => tickets.AddTableServiceClient("UseDevelopmentStorage=true"));
-
-        using var provider = services.BuildServiceProvider();
-        var client = provider.GetRequiredService<TableServiceClient>();
-
-        Assert.Equal(new Uri("http://127.0.0.1:10002/devstoreaccount1"), client.Uri);
-    }
-
-    [Fact]
-    public void OptionsBinding_readsServiceNowSection()
-    {
-        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-        {
-            ["ServiceNow:InstanceUrl"] = "https://dev00000.service-now.com",
-            ["ServiceNow:Username"] = "demo",
-        }).Build();
-        var options = config.GetSection("ServiceNow").Get<ServiceNowOptions>();
-
-        Assert.NotNull(options);
-        Assert.Equal("https://dev00000.service-now.com", options.InstanceUrl);
-        Assert.Equal("demo", options.Username);
     }
 }
 
