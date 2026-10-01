@@ -12,7 +12,7 @@ from .chunking import chunk_kb
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="ingest",
-        description="Chunk the kb articles and push them into the search index.",
+        description="Chunk the kb articles and print them as JSON (a dry run).",
     )
     parser.add_argument(
         "--kb", type=Path, default=Path("kb"), help="knowledge base directory"
@@ -24,14 +24,12 @@ def main() -> None:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="print the chunks as JSON instead of pushing them",
+        help="print the chunks as JSON (the only supported mode)",
     )
     args = parser.parse_args()
 
     if not args.dry_run:
-        parser.error(
-            "pushing to the search index requires index configuration; use --dry-run"
-        )
+        parser.error("only a dry run is supported; pass --dry-run")
 
     chunks = chunk_kb(args.kb, args.repo, args.ref)
     json.dump(

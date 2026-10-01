@@ -1,4 +1,4 @@
-"""Ingest the knowledge base into the search index."""
+"""Chunk the knowledge-base articles into citation-tagged passages."""
 
 from .chunking import Chunk, chunk_article, chunk_kb
 

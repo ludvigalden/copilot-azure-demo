@@ -15,7 +15,7 @@ _SECTION_HEADING = re.compile(r"^## (.+)$", re.MULTILINE)
 
 @dataclass(frozen=True)
 class Chunk:
-    """One section of one article, ready to push into the index."""
+    """One section of one article, as a citation-tagged passage."""
 
     id: str
     title: str
@@ -28,8 +28,7 @@ def chunk_article(path: Path, repo: str, ref: str) -> list[Chunk]:
     """Split one article into per-heading chunks.
 
     ``repo`` and ``ref`` name the GitHub repository and revision the
-    citation URLs point at (in CD: ``GITHUB_REPOSITORY`` and
-    ``GITHUB_SHA``; for a dry run: e.g. ``owner/repo`` and ``main``).
+    citation URLs point at (e.g. ``owner/repo`` and ``main``).
     """
     text = path.read_text(encoding="utf-8")
     match = _FRONTMATTER_TITLE.search(text)
