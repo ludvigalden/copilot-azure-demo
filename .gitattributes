@@ -12,3 +12,6 @@
 # Linguist-generated
 *.min.js linguist-generated=true
 *.min.css linguist-generated=true
+services/api/ItSupport.Api/Generated/Api.g.cs linguist-generated=true
+apps/web/src/api/schema.d.ts linguist-generated=true
+apps/power-platform/solution/Connectors/ItSupportApi_openapidefinition.json linguist-generated=true
