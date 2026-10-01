@@ -1,0 +1,14 @@
+* text=auto eol=lf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+
+# Linguist-generated
+*.min.js linguist-generated=true
+*.min.css linguist-generated=true
