@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/services/" />
+  <Folder Name="/services/api/">
+    <Project Path="services/api/ItSupport.Api.Tests/ItSupport.Api.Tests.csproj" />
+    <Project Path="services/api/ItSupport.Api/ItSupport.Api.csproj" />
+  </Folder>
+</Solution>
