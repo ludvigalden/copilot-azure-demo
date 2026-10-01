@@ -1,10 +1,12 @@
 # IT Support Assistant
 
-A working demo of an IT-support assistant built on Microsoft Copilot
-Studio and Azure. Ask it a question and it answers from a small
-knowledge base of Markdown articles, with links back to the source
-articles. It can look up your profile and manager in Microsoft Graph,
-and it can escalate a conversation into a support ticket — in a
+Copyright (c) 2026 Ludvig Aldén. All rights reserved; see [LICENSE](LICENSE).
+
+A working demo of an IT-support assistant built on ASP.NET Core,
+React and Microsoft Entra ID. Ask it a question and it answers from a
+small knowledge base of Markdown articles, citing the source
+articles. It can look up your profile and manager in Microsoft
+Graph, and it can escalate a conversation into a support ticket — in a
 built-in Table Storage store, or in ServiceNow when ServiceNow
 credentials are configured.
 
@@ -15,22 +17,19 @@ technology it uses does a real job:
 |---|---|
 | TypeScript (React, Fluent UI) | The chat SPA the user talks to. |
 | C# / ASP.NET Core | The HTTP API: answers with citations, profile lookup, ticket creation. |
-| Python | Knowledge-base ingestion into Azure AI Search, and evaluation of answer quality. |
-| Power Fx | The Copilot Studio escalation topic and its adaptive card. |
-| Terraform | All Azure and Entra ID resources, deployed by GitHub Actions with OIDC. |
+| Python | Chunking the knowledge base into citation-tagged passages, and evaluation of answer quality. |
 
 ## Repository layout
 
 | Path | Contents |
 |---|---|
 | `apps/web/` | The React SPA. |
-| `apps/power-platform/` | The unpacked Copilot Studio solution. |
+| `apps/power-platform/` | The Power Platform custom connector definition, generated from the OpenAPI document. |
 | `services/api/` | The ASP.NET Core API and its tests. |
-| `services/ingest/` | The Python ingester (uv project): chunks `kb/` and pushes it into the search index. |
+| `services/ingest/` | The Python ingester (uv project): chunks `kb/` into passages with citation URLs and prints them as JSON (`--dry-run`). |
 | `eval/` | The Python evaluation project (uv project): the golden question set and the quality gate. |
 | `contracts/openapi/` | The OpenAPI document, the Spectral ruleset and the generation script. |
 | `kb/` | The knowledge base articles. |
-| `infra/terraform/` | `bootstrap/` (applied once, locally) and `main/` (applied by CD). |
 | `docs/adr/` | Architecture decision records. |
 
 ## Contract-first API
@@ -57,7 +56,8 @@ npm run lint:openapi --prefix apps/web
 ## Local development
 
 Prerequisites: the .NET 10 SDK, Node 24, `uv` (Python 3.13 is fetched
-automatically), and Docker or Node for Azurite.
+automatically), `jq` (for regenerating the contract outputs), and
+Docker or Node for Azurite.
 
 ```sh
 # 1. Load the environment (a copy of .env.example runs on the stand-ins).

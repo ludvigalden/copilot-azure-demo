@@ -7,9 +7,9 @@
 
 The HTTP API has three independent consumers, written in three
 languages: the C# server that implements it, the TypeScript client the
-SPA calls it with, and the Power Platform custom connector the Copilot
-Studio agent acts through. If each consumer is written by hand against
-a reading of the others, the three drift apart silently, and every
+SPA calls it with, and the Power Platform custom connector definition
+that exposes it to Power Platform. If each consumer is written by hand
+against a reading of the others, the three drift apart silently, and every
 change to the surface costs three coordinated hand edits.
 
 ## Decision

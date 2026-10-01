@@ -8,9 +8,9 @@
 The same code base must run in two very different settings. Locally,
 there is no Azure tenant, no Microsoft Entra ID app registration and no
 ServiceNow instance, yet the API must start, serve the SPA and create
-tickets against a local store. In Azure, the real integrations are
-wired by Terraform and CD. Choosing between the two modes with command
-line flags or build configurations would duplicate the deployment
+tickets against a local store. With real credentials, the same API
+must use Entra ID, Microsoft Graph and ServiceNow. Choosing between the
+two modes with command line flags or build configurations would duplicate the deployment
 matrix into tooling, and the flag combination nobody tests is the one
 that breaks in production.
 
@@ -38,12 +38,10 @@ present but commented out.
 
 `.env.local` carries the real local values and is git-ignored. It is
 loaded by sourcing it from the repository root with the shell's
-`set -a; . ./.env.local; set +a`, before starting the API (and before
-running Terraform). This one mechanism covers every consumer: ASP.NET
+`set -a; . ./.env.local; set +a`, before starting the API. ASP.NET
 Core reads `__`-separated environment variables as its `:`-separated
-configuration keys natively, and Terraform reads its variables from
-`TF_VAR_`-prefixed environment variables natively. No dotenv library
-is added to any project.
+configuration keys natively, so no dotenv library is added to the
+project.
 
 ## Consequences
 
@@ -51,9 +49,9 @@ is added to any project.
   the environment is the only selector.
 - The stand-ins cannot leak into production: outside Development the
   same absence that selects a stand-in fails the startup instead.
-- Every configuration key is visible in one committed file with a
-  placeholder and a one-line comment, and the commented-out entries
-  document exactly which integrations are optional.
+- Every value that varies between environments is listed in
+  `.env.example` with a placeholder and a one-line comment, and the
+  commented-out entries document exactly which integrations are
+  optional.
 - The source-it-yourself route assumes a POSIX shell; this is the
-  documented local-development path, while Azure deployments receive
-  their configuration from Container Apps settings set by Terraform.
+  documented local-development path.
