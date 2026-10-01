@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  contract-and-app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Restore tools and npm dependencies
+        run: |
+          dotnet tool restore
+          npm ci --prefix apps/web
+
+      - name: Lint the OpenAPI contract
+        run: npm run lint:openapi --prefix apps/web
+
+      - name: Regenerate all contract outputs and fail on drift
+        run: |
+          sh contracts/openapi/generate.sh
+          git diff --exit-code
+          test -z "$(git status --porcelain)"
+
+      - name: Check .NET formatting
+        run: dotnet format ItSupport.slnx --verify-no-changes
+
+      - name: Test the API
+        run: dotnet test ItSupport.slnx
+
+      - name: Lint the SPA
+        run: npm run lint --prefix apps/web
+
+      - name: Build the SPA
+        run: npm run build --prefix apps/web
+
+      - name: Test the SPA
+        run: npm test --prefix apps/web
+
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        project: [services/ingest, eval]
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: 3.13
+
+      - name: Sync locked dependencies
+        run: uv sync --locked
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Test
+        run: uv run pytest
