@@ -3,17 +3,12 @@ name = "eval"
 version = "0.1.0"
 description = "RAG evaluation and quality gate over the golden question set."
 license = "LicenseRef-Proprietary"
-classifiers = [
-    "Private :: Do Not Upload",
-]
+classifiers = ["Private :: Do Not Upload"]
 requires-python = ">=3.13"
 dependencies = []
 
 [dependency-groups]
-dev = [
-    "pytest>=8.4",
-    "ruff>=0.14",
-]
+dev = ["pytest>=8.4", "ruff>=0.14"]
 
 [tool.ruff]
 target-version = "py313"
@@ -21,3 +16,6 @@ target-version = "py313"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.pyright]
+typeCheckingMode = "standard"
