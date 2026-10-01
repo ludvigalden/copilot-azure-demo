@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { components } from "./api/schema"
-import { needsAuth } from "./auth"
-
-type AuthConfig = components["schemas"]["AuthConfig"]
+import { type AuthConfig, needsAuth } from "./client"
 
 const auth: AuthConfig = {
   clientId: "client",

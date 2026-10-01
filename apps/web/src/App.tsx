@@ -113,11 +113,15 @@ export function App() {
           <Text>{answer.text}</Text>
           {answer.citations.length > 0 && (
             <div className={styles.citations}>
-              {answer.citations.map((c) => (
-                <Link key={c.url} href={c.url} target="_blank" rel="noreferrer">
-                  {c.title}
-                </Link>
-              ))}
+              {answer.citations.map((c) =>
+                c.url ? (
+                  <Link key={c.url} href={c.url} target="_blank" rel="noreferrer">
+                    {c.title}
+                  </Link>
+                ) : (
+                  <Text key={c.title}>{c.title}</Text>
+                ),
+              )}
             </div>
           )}
         </Card>

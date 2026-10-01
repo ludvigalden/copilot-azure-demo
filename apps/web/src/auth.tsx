@@ -1,22 +1,11 @@
 import { InteractionType, PublicClientApplication } from "@azure/msal-browser"
 import { MsalAuthenticationTemplate, MsalProvider } from "@azure/msal-react"
-import { createElement, type ReactNode } from "react"
-import { api } from "./api/client"
-import type { components } from "./api/schema"
-
-export type AuthConfig = components["schemas"]["AuthConfig"]
-export type ClientConfig = components["schemas"]["ClientConfig"]
-
-/** True only when /api/config returned a non-null auth block. */
-export function needsAuth(
-  config: ClientConfig | null | undefined,
-): config is ClientConfig & { auth: AuthConfig } {
-  return config?.auth != null
-}
+import type { ReactNode } from "react"
+import { type AuthConfig, api } from "./api/client"
 
 /**
  * Creates and initializes MSAL, then attaches the bearer-token middleware to
- * the shared API client. Called only when /api/config returned auth.
+ * the shared API client.
  */
 export async function initializeAuth(auth: AuthConfig) {
   const msal = new PublicClientApplication({
@@ -48,13 +37,11 @@ export async function initializeAuth(auth: AuthConfig) {
 
 /** Wraps the app in the MSAL provider and forces redirect sign-in. */
 export function authGate(msal: PublicClientApplication, children: ReactNode) {
-  return createElement(
-    MsalProvider,
-    { instance: msal },
-    createElement(
-      MsalAuthenticationTemplate,
-      { interactionType: InteractionType.Redirect },
-      children,
-    ),
+  return (
+    <MsalProvider instance={msal}>
+      <MsalAuthenticationTemplate interactionType={InteractionType.Redirect}>
+        {children}
+      </MsalAuthenticationTemplate>
+    </MsalProvider>
   )
 }
