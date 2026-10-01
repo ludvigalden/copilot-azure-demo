@@ -1,0 +1,293 @@
+openapi: 3.0.3
+info:
+  title: IT Support API
+  version: 0.1.0
+  description: >
+    The action/integration API for the IT support demo: retrieval-augmented
+    answers over the knowledge base, profile lookup for the signed-in caller,
+    and IT ticket creation. The TypeScript client, the C# server structure and
+    the Power Platform custom connector all derive from this document.
+  contact:
+    name: Ludvig Aldén
+servers:
+  - url: /api
+tags:
+  - name: it-support
+    description: IT support operations for the assistant, the portal and the agent.
+security:
+  - entra:
+      - "api://{clientId}/access_as_user"
+paths:
+  /config:
+    get:
+      operationId: GetConfig
+      summary: Get client configuration
+      description: >
+        Returns the client bootstrap configuration. Anonymous by design: it
+        tells the SPA whether sign-in is configured and, if so, which Entra
+        client and scope to use. When authentication is not configured the
+        auth property is null and the client skips sign-in.
+      tags:
+        - it-support
+      security: []
+      x-ms-visibility: internal
+      responses:
+        "200":
+          description: The client configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientConfig"
+  /me:
+    get:
+      operationId: GetMyProfile
+      summary: Get my profile
+      description: >
+        Returns the signed-in caller's profile, read from the directory on
+        behalf of the caller, including the manager when one is recorded.
+      tags:
+        - it-support
+      responses:
+        "200":
+          description: The caller's profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+        "400":
+          description: The request was malformed.
+        "401":
+          description: No valid access token was presented.
+  /answers:
+    post:
+      operationId: AnswerQuestion
+      summary: Answer a question
+      description: >
+        Answers a question against the knowledge base and returns the answer
+        text with citations, plus the retrieved chunk texts, which evaluation
+        consumes.
+      tags:
+        - it-support
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnswerRequest"
+      responses:
+        "200":
+          description: The answer with citations and retrieved chunks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Answer"
+        "400":
+          description: The request body was malformed.
+        "401":
+          description: No valid access token was presented.
+  /tickets:
+    post:
+      operationId: CreateTicket
+      summary: Create support ticket
+      description: >
+        Creates an IT ticket for the signed-in caller and returns it with its
+        number. The caller is taken from the access token, never from the
+        request body.
+      tags:
+        - it-support
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTicketRequest"
+      responses:
+        "201":
+          description: The ticket was created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ticket"
+        "400":
+          description: The request body was malformed.
+        "401":
+          description: No valid access token was presented.
+components:
+  securitySchemes:
+    entra:
+      type: oauth2
+      description: Microsoft Entra ID (authorization code flow with PKCE).
+      flows:
+        authorizationCode:
+          authorizationUrl: https://login.microsoftonline.com/common/oauth2/v2.0/authorize
+          tokenUrl: https://login.microsoftonline.com/common/oauth2/v2.0/token
+          scopes:
+            "api://{clientId}/access_as_user": Access the IT Support API on behalf of the signed-in user.
+  schemas:
+    Person:
+      type: object
+      description: A directory person.
+      required:
+        - displayName
+        - email
+      properties:
+        displayName:
+          type: string
+          description: The person's display name.
+        email:
+          type: string
+          description: The person's email address.
+          format: email
+    AuthConfig:
+      type: object
+      description: Entra configuration for the client's sign-in.
+      required:
+        - clientId
+        - tenantId
+        - scope
+      properties:
+        clientId:
+          type: string
+          description: The client application (client) ID.
+        tenantId:
+          type: string
+          description: The directory (tenant) ID.
+        scope:
+          type: string
+          description: The scope to request for API access.
+    ClientConfig:
+      type: object
+      description: Client bootstrap configuration.
+      required:
+        - auth
+      properties:
+        auth:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/AuthConfig"
+          description: Sign-in configuration, or null when authentication is not configured.
+    UserProfile:
+      type: object
+      description: The signed-in caller's profile.
+      required:
+        - displayName
+        - email
+      properties:
+        displayName:
+          type: string
+          description: The caller's display name.
+        email:
+          type: string
+          description: The caller's email address.
+          format: email
+        department:
+          type: string
+          nullable: true
+          description: The caller's department, when recorded.
+        manager:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/Person"
+          description: The caller's manager, when one is recorded.
+    AnswerRequest:
+      type: object
+      description: A question for the knowledge base.
+      required:
+        - question
+      properties:
+        question:
+          type: string
+          maxLength: 2000
+          x-ms-summary: Question
+          description: The question to answer.
+    Citation:
+      type: object
+      description: A citation backing an answer.
+      required:
+        - title
+        - url
+      properties:
+        title:
+          type: string
+          description: The cited article's title.
+        url:
+          type: string
+          description: A link to the cited article.
+    RetrievedChunk:
+      type: object
+      description: A retrieved knowledge-base chunk. Its text feeds evaluation.
+      required:
+        - title
+        - content
+      properties:
+        title:
+          type: string
+          description: The chunk's article title.
+        content:
+          type: string
+          description: The chunk's text.
+    Answer:
+      type: object
+      description: An answer with its citations and retrieved chunks.
+      required:
+        - text
+        - citations
+        - chunks
+      properties:
+        text:
+          type: string
+          description: The answer text.
+        citations:
+          type: array
+          description: The citations backing the answer.
+          items:
+            $ref: "#/components/schemas/Citation"
+        chunks:
+          type: array
+          description: The retrieved chunks, for evaluation.
+          items:
+            $ref: "#/components/schemas/RetrievedChunk"
+    CreateTicketRequest:
+      type: object
+      description: A request to create an IT ticket.
+      required:
+        - shortDescription
+      properties:
+        shortDescription:
+          type: string
+          maxLength: 160
+          x-ms-summary: Short description
+          description: A one-line summary of the problem.
+        description:
+          type: string
+          nullable: true
+          x-ms-summary: Description
+          description: A longer description of the problem.
+    Ticket:
+      type: object
+      description: A created IT ticket.
+      required:
+        - number
+        - shortDescription
+        - caller
+        - createdAt
+      properties:
+        number:
+          type: string
+          description: >
+            The ticket number, on the form IT-yyyyMMdd-XXXX where XXXX is four
+            characters from the Crockford base32 alphabet
+            (pattern ^IT-\d{8}-[0-9A-HJKMNP-TV-Z]{4}$).
+        url:
+          type: string
+          nullable: true
+          description: A link to the ticket in the ticketing system, when one exists.
+        shortDescription:
+          type: string
+          description: The ticket's one-line summary.
+        caller:
+          $ref: "#/components/schemas/Person"
+        createdAt:
+          type: string
+          description: When the ticket was created.
+          format: date-time

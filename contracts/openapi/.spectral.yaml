@@ -1,0 +1,9 @@
+extends: ["spectral:oas"]
+rules:
+  operation-summary:
+    description: Every operation needs a summary (shown as the action name in Power Automate and Copilot Studio).
+    given: "$.paths[*][get,put,post,delete,patch]"
+    severity: error
+    then:
+      field: summary
+      function: truthy
