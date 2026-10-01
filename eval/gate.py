@@ -3,8 +3,7 @@
 Pure functions over per-item metric values: every item must reach the
 minimum groundedness, the mean relevance across the set must reach its
 threshold, and every expected article must be retrieved within the top
-``k`` results. The runner that produces the metric values belongs to the
-evaluation phase; this module judges them.
+``k`` results. This module judges metric values; it does not produce them.
 """
 
 from dataclasses import dataclass
