@@ -57,7 +57,8 @@ npm run lint:openapi --prefix apps/web
 
 Prerequisites: the .NET 10 SDK, Node 24, `uv` (Python 3.13 is fetched
 automatically), `jq` (for regenerating the contract outputs), and
-Docker or Node for Azurite.
+Docker for the Azurite table service (exact command in the local
+development section).
 
 ```sh
 # 1. Load the environment (a copy of .env.example runs on the stand-ins).
@@ -89,8 +90,8 @@ implementations.
 ```sh
 dotnet test ItSupport.slnx                        # API tests
 npm test --prefix apps/web                        # SPA tests
-cd services/ingest && uv run pytest               # ingester tests
-cd eval && uv run pytest                          # quality-gate tests
+uv run --directory services/ingest pytest       # ingester tests
+uv run --directory eval pytest                  # quality-gate tests
 ```
 
 Linting: `dotnet format ItSupport.slnx --verify-no-changes`,
