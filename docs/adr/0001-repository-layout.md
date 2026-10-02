@@ -26,6 +26,14 @@ The top level is divided by role:
 | `contracts/openapi/` | The OpenAPI document, its lint ruleset and the generation script | One language-neutral contract with three consumers; it is a reviewed source document, not a library, so it gets its own root rather than living under any one language's tree. |
 | `kb/` | The knowledge base articles | A tiny corpus read by the ingester and cited by URL; it is content, not code, and belongs at the top where a non-developer can find it. |
 | `eval/` | The evaluation project and golden set | Statistical quality measurement is a distinct activity from deterministic testing and gets its own project. |
+| `infra/terraform/bootstrap/` | The one-time Terraform root: the remote state backend and the deployment identity | A root cannot create the state store its own state lives in, so this root is applied once by hand and everything after it is applied by the pipeline. |
+| `infra/terraform/main/` | Every Azure resource the application needs | The declarative description of the running system; the pipeline plans and applies it. |
+| `Dockerfile` | The one container image | The SPA and the API ship together: a change is reviewed as one unit and deployed as one unit. |
+| `.dockerignore` | The image build context boundary | The context carries only what the two build stages read, so nothing else in the repository reaches the image. |
+| `.github/workflows/ci.yml` | The pull-request gate: contract drift and tests | The repository's checks run identically for every change, from one committed definition. |
+| `.github/workflows/app.yml` | The image build and the container app update | Delivery is triggered by a merge, not by hand; the workflow is the only writer of the image. |
+| `.github/workflows/infra.yml` | Terraform plan and apply of the main root | Infrastructure changes are reviewed as plans before they reach Azure. |
+| `.github/workflows/ingest.yml` | The scheduled knowledge-base ingestion | The corpus and its processing cadence are repository content, not manual steps. |
 | `docs/adr/` | Architecture decision records | Numbered and dated, one file per decision. |
 
 `apps/` versus `services/` follows a single question: does a person

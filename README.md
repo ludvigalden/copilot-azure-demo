@@ -30,6 +30,14 @@ technology it uses does a real job:
 | `eval/` | The Python evaluation project (uv project): the golden question set and the quality gate. |
 | `contracts/openapi/` | The OpenAPI document, the Spectral ruleset and the generation script. |
 | `kb/` | The knowledge base articles. |
+| `infra/terraform/bootstrap/` | The one-time Terraform root: the remote state backend and the deployment identity. |
+| `infra/terraform/main/` | The Terraform root that owns every Azure resource. |
+| `Dockerfile` | The single container image: the SPA built and copied into the API image. |
+| `.dockerignore` | The image build context: only what the two build stages read. |
+| `.github/workflows/ci.yml` | The pull-request gate: contract regeneration drift check, lints and all test suites. |
+| `.github/workflows/app.yml` | Builds the container image into the GitHub Container Registry and updates the container app. |
+| `.github/workflows/infra.yml` | Plans the Terraform `main/` root on pull requests and applies it on pushes to `main`. |
+| `.github/workflows/ingest.yml` | Runs the knowledge-base ingester on a weekly schedule and on changes. |
 | `docs/adr/` | Architecture decision records. |
 
 ## Contract-first API
@@ -98,8 +106,49 @@ Linting: `dotnet format ItSupport.slnx --verify-no-changes`,
 `npm run lint --prefix apps/web` (Biome), and `uv run ruff check` /
 `uv run ruff format --check` in each Python project.
 
+## Infrastructure and deployment
+
+Two Terraform roots under `infra/terraform/` describe the Azure side.
+`bootstrap/` creates the remote Terraform state backend and the
+deployment identity the workflows assume; it is applied once,
+locally, because nothing else can create the state store the
+pipeline depends on. `main/` owns every application resource: Azure
+OpenAI with a chat and an embedding model deployment, Azure AI
+Search on the free tier holding the Terraform-managed knowledge-base
+index, Table Storage for tickets, and one Azure Container App that
+scales to zero. Azure access rides managed identities and
+least-privilege role assignments; the one credential Terraform
+handles is the search index's Azure OpenAI vectorizer key, which it
+delivers through a write-only value that never lands in Terraform
+state or output. See ADR 0004 for the decisions behind this shape.
+
+Four workflows in `.github/workflows/` run the pipeline:
+
+- `ci.yml` regenerates the contract outputs and fails on drift, and
+  runs the tests and lints of the API, the SPA and both Python
+  projects; it gates every pull request.
+- `infra.yml` plans the `main/` root on pull requests and applies it
+  on pushes to `main`, authenticating to Azure over OpenID Connect
+  with no stored cloud secrets.
+- `app.yml` builds the one container image and stores it in the
+  GitHub Container Registry — images live with the repository, not
+  in a cloud registry — then points the container app at the new
+  image on the `demo` environment.
+- `ingest.yml` runs the knowledge-base ingester on a weekly schedule
+  and on every change to the articles or the ingester.
+
+The image itself is built by `Dockerfile`: the SPA is built first and
+copied into the API image, so one image serves both. Terraform
+creates the container app with a placeholder image and leaves the
+image to `app.yml`: the app serves the placeholder until that
+workflow's first run, and the freshly built image from then on.
+
+None of this is needed to run the application locally; the local
+development section above covers the zero-Azure setup.
+
 ## Further reading
 
 - [ADR 0001](docs/adr/0001-repository-layout.md) — why the repository is laid out this way.
 - [ADR 0002](docs/adr/0002-contract-first-http-api.md) — the contract-first generation chain and the drift gate.
 - [ADR 0003](docs/adr/0003-configuration-selects-implementation.md) — how configuration selects real implementations or stand-ins.
+- [ADR 0004](docs/adr/0004-infrastructure-and-delivery.md) — the infrastructure and delivery decisions.
