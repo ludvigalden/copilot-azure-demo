@@ -115,6 +115,17 @@ resource "azuread_application_federated_identity_credential" "cd" {
   subject        = "repo:${var.github_repository}:environment:demo"
 }
 
+# GitHub's environment-scoped OIDC subjects also carry the immutable owner
+# and repository IDs alongside the names; both forms are trusted.
+resource "azuread_application_federated_identity_credential" "cd_ids" {
+  application_id = azuread_application.cd.id
+  display_name   = "github-actions-demo-ids"
+  description    = "The numeric subject form GitHub puts on environment-scoped tokens for ${var.github_repository}."
+  audiences      = ["api://AzureADTokenExchange"]
+  issuer         = "https://token.actions.githubusercontent.com"
+  subject        = "repo:ludvigalden@30798446/copilot-azure-demo@1399509581:environment:demo"
+}
+
 resource "azurerm_role_assignment" "cd_contributor" {
   scope                = azurerm_resource_group.app.id
   role_definition_name = "Contributor"
