@@ -27,15 +27,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: microsoft/powerplatform-actions/actions-install@v1.9.2
-
       - name: Pack the unmanaged solution
-        run: |
-          mkdir -p out
-          pac solution pack \
-            --zipfile "$SOLUTION_FILE" \
-            --folder "$SOLUTION_FOLDER" \
-            --packagetype Unmanaged
+        uses: microsoft/powerplatform-actions/pack-solution@v1.9.2
+        with:
+          solution-folder: ${{ env.SOLUTION_FOLDER }}
+          solution-file: ${{ env.SOLUTION_FILE }}
+          solution-type: Unmanaged
 
       - uses: actions/upload-artifact@v4
         with:
@@ -58,15 +55,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: microsoft/powerplatform-actions/actions-install@v1.9.2
-
       - name: Pack the unmanaged solution
-        run: |
-          mkdir -p out
-          pac solution pack \
-            --zipfile "$SOLUTION_FILE" \
-            --folder "$SOLUTION_FOLDER" \
-            --packagetype Unmanaged
+        uses: microsoft/powerplatform-actions/pack-solution@v1.9.2
+        with:
+          solution-folder: ${{ env.SOLUTION_FOLDER }}
+          solution-file: ${{ env.SOLUTION_FILE }}
+          solution-type: Unmanaged
 
       - name: Fill the deployment settings from repository variables
         env:
