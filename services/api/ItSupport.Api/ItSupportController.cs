@@ -24,13 +24,19 @@ public sealed class ItSupportController(
         }
         else
         {
+            // The scope must match the app registration's application ID URI.
+            // Terraform publishes that URI, so the deployed configuration
+            // carries the exact string; the default covers local development.
+            var scope = configuration["AzureAd:Scope"];
             config = new ClientConfig
             {
                 Auth = new AuthConfig
                 {
                     ClientId = clientId,
                     TenantId = tenantId,
-                    Scope = $"api://{clientId}/access_as_user",
+                    Scope = string.IsNullOrEmpty(scope)
+                        ? $"api://{clientId}/access_as_user"
+                        : scope,
                 },
             };
         }
