@@ -28,6 +28,30 @@ resource "azurerm_search_service" "search" {
   # Accepts Entra identities on the data plane (role assignments below) and
   # keeps API keys accepted for the connections that still need one.
   authentication_failure_mode = "http401WithBearerChallenge"
+
+  # azurerm refuses to configure the semantic ranker on a free-tier
+  # service, yet records the value read back from the API and would reset
+  # it to disabled on every apply. The capability is owned by the azapi
+  # update below; ignore it here.
+  lifecycle {
+    ignore_changes = [semantic_search_sku]
+  }
+}
+
+# The semantic ranker is a service-level capability that defaults to
+# disabled; with it disabled, every semantic query fails at runtime. The
+# free plan carries a monthly request allowance, which suits the tiny
+# knowledge base. azurerm cannot set this property on a free-tier service,
+# so the update goes through the management API directly.
+resource "azapi_update_resource" "search_semantic_plan" {
+  type        = "Microsoft.Search/searchServices@2025-05-01"
+  resource_id = azurerm_search_service.search.id
+
+  body = {
+    properties = {
+      semanticSearch = "free"
+    }
+  }
 }
 
 resource "azurerm_role_assignment" "search_documents_app" {
