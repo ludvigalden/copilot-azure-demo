@@ -19,9 +19,10 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
-  ingest:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -30,5 +31,35 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Sync locked dependencies
+        run: uv sync --locked --project services/ingest
+
       - name: Chunk and validate the knowledge base
         run: uv run --project services/ingest ingest --kb kb --repo "$GITHUB_REPOSITORY" --dry-run
+
+  push:
+    needs: validate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: demo
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Sync locked dependencies
+        run: uv sync --locked --project services/ingest
+
+      - name: Push the knowledge base into the search index
+        run: >
+          uv run --project services/ingest ingest --kb kb
+          --repo "$GITHUB_REPOSITORY"
+          --prefix "${{ vars.NAME_PREFIX }}"
