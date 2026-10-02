@@ -1,0 +1,9 @@
+{
+  "EnvironmentVariables": [
+    {
+      "SchemaName": "itsupport_ApiHost",
+      "Value": ""
+    }
+  ],
+  "ConnectionReferences": []
+}

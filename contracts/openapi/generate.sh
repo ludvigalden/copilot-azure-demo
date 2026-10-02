@@ -8,7 +8,11 @@ dotnet build ItSupport.slnx
 
 npm run gen:api --prefix apps/web
 
-connector=apps/power-platform/solution/Connectors/ItSupportApi_openapidefinition.json
+# The connector payload rides inside the classic solution layout under
+# Connectors/ItSupportApi/, where pac solution pack carries it as a
+# connector composite file (apiDefinition.swagger.json is the paconn name).
+connector=apps/power-platform/solution/Connectors/ItSupportApi/apiDefinition.swagger.json
+mkdir -p "$(dirname "$connector")"
 dotnet hidi transform -d contracts/openapi/openapi.yaml -v 2.0 -f json --co -o "$connector"
 jq --arg h '@environmentVariables("itsupport_ApiHost")' '.host = $h' "$connector" > "$connector.tmp"
 mv "$connector.tmp" "$connector"
