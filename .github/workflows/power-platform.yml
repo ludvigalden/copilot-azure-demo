@@ -27,6 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: microsoft/powerplatform-actions/actions-install@v1.9.2
+
       - name: Pack the unmanaged solution
         uses: microsoft/powerplatform-actions/pack-solution@v1.9.2
         with:
@@ -54,6 +56,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
+
+      - uses: microsoft/powerplatform-actions/actions-install@v1.9.2
 
       - name: Pack the unmanaged solution
         uses: microsoft/powerplatform-actions/pack-solution@v1.9.2
