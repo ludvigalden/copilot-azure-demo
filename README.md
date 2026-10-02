@@ -24,7 +24,7 @@ technology it uses does a real job:
 | Path | Contents |
 |---|---|
 | `apps/web/` | The React SPA. |
-| `apps/power-platform/` | The Power Platform custom connector definition, generated from the OpenAPI document. |
+| `apps/power-platform/` | The unmanaged solution source: the custom connector payload (generated from the OpenAPI document), the environment variable definition, and the empty deployment settings the pipeline fills. |
 | `services/api/` | The ASP.NET Core API and its tests. |
 | `services/ingest/` | The Python ingester (uv project): chunks `kb/` into passages with citation URLs and prints them as JSON (`--dry-run`). |
 | `eval/` | The Python evaluation project (uv project): the golden question set and the quality gate. |
@@ -122,7 +122,7 @@ handles is the search index's Azure OpenAI vectorizer key, which it
 delivers through a write-only value that never lands in Terraform
 state or output. See ADR 0004 for the decisions behind this shape.
 
-Four workflows in `.github/workflows/` run the pipeline:
+Five workflows in `.github/workflows/` run the pipeline:
 
 - `ci.yml` regenerates the contract outputs and fails on drift, and
   runs the tests and lints of the API, the SPA and both Python
@@ -136,6 +136,12 @@ Four workflows in `.github/workflows/` run the pipeline:
   image on the `demo` environment.
 - `ingest.yml` runs the knowledge-base ingester on a weekly schedule
   and on every change to the articles or the ingester.
+- `power-platform.yml` packs the unmanaged solution from
+  `apps/power-platform/` on every pull request, and — once the
+  environment variable is configured — imports and publishes it with
+  federated authentication and environment-variable values filled
+  from repository variables. The setup checklist is
+  [docs/power-platform-setup.md](docs/power-platform-setup.md).
 
 The image itself is built by `Dockerfile`: the SPA is built first and
 copied into the API image, so one image serves both. Terraform
@@ -152,3 +158,7 @@ development section above covers the zero-Azure setup.
 - [ADR 0002](docs/adr/0002-contract-first-http-api.md) — the contract-first generation chain and the drift gate.
 - [ADR 0003](docs/adr/0003-configuration-selects-implementation.md) — how configuration selects real implementations or stand-ins.
 - [ADR 0004](docs/adr/0004-infrastructure-and-delivery.md) — the infrastructure and delivery decisions.
+- [Copilot Studio agent design](docs/copilot-studio-agent.md) — the
+  agent, its escalation topic and its agent flow.
+- [Power Platform setup checklist](docs/power-platform-setup.md) —
+  the one-time environment setup and verification.
