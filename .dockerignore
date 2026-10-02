@@ -1,0 +1,16 @@
+# Build context: only what the two build stages read. The .??* pattern
+# keeps every dot-entry at the root out of the context.
+.??*
+docs
+eval
+infra
+kb
+apps/power-platform
+**/node_modules
+**/bin
+**/obj
+**/dist
+**/.venv
+**/__pycache__
+**/.terraform
+*.tfstate*
