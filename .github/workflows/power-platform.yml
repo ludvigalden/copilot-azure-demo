@@ -1,0 +1,89 @@
+name: Power Platform
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/power-platform/**"
+      - "contracts/openapi/**"
+      - ".github/workflows/power-platform.yml"
+  pull_request:
+    paths:
+      - "apps/power-platform/**"
+      - "contracts/openapi/**"
+      - ".github/workflows/power-platform.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOLUTION_FOLDER: apps/power-platform/solution
+  SOLUTION_FILE: out/itsupport.zip
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: microsoft/powerplatform-actions@v1.9.2
+
+      - name: Pack the unmanaged solution
+        run: |
+          mkdir -p out
+          pac solution pack \
+            --zipfile "$SOLUTION_FILE" \
+            --folder "$SOLUTION_FOLDER" \
+            --packagetype Unmanaged
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: itsupport-unmanaged
+          path: ${{ env.SOLUTION_FILE }}
+          if-no-files-found: error
+
+  import:
+    needs: pack
+    # Skips (green) until the environment variable is created as a
+    # repository variable; packing alone still proves the layout.
+    if: >-
+      github.event_name != 'pull_request' &&
+      vars.POWER_PLATFORM_ENVIRONMENT_URL != ''
+    runs-on: ubuntu-latest
+    environment: demo
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: microsoft/powerplatform-actions@v1.9.2
+
+      - name: Pack the unmanaged solution
+        run: |
+          mkdir -p out
+          pac solution pack \
+            --zipfile "$SOLUTION_FILE" \
+            --folder "$SOLUTION_FOLDER" \
+            --packagetype Unmanaged
+
+      - name: Fill the deployment settings from repository variables
+        env:
+          IT_SUPPORT_API_HOST: ${{ vars.IT_SUPPORT_API_HOST }}
+        run: |
+          jq --arg host "$IT_SUPPORT_API_HOST" \
+            '.EnvironmentVariables |= map(if .SchemaName == "itsupport_ApiHost" then .Value = $host else . end)' \
+            apps/power-platform/deployment-settings.json > out/deployment-settings.json
+          cat out/deployment-settings.json
+
+      - name: Import and publish the solution
+        uses: microsoft/powerplatform-actions/import-solution@v1.9.2
+        with:
+          environment-url: ${{ vars.POWER_PLATFORM_ENVIRONMENT_URL }}
+          solution-file: ${{ env.SOLUTION_FILE }}
+          app-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          use-deployment-settings-file: true
+          deployment-settings-file: out/deployment-settings.json
+          publish-changes: true
