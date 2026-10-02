@@ -63,10 +63,12 @@ internal names.
    missing read rights on the index; grant it:
 
    ```sh
+   scope="/subscriptions/<subscription id>/resourceGroups/<resource group>"
+   scope="$scope/providers/Microsoft.Search/searchServices/<search service>"
    az role assignment create \
      --assignee "<object id of the connection's enterprise application>" \
      --role "Search Index Data Reader" \
-     --scope "/subscriptions/<subscription id>/resourceGroups/<resource group>/providers/Microsoft.Search/searchServices/<search service>"
+     --scope "$scope"
    ```
 
    Then re-run the connection test.

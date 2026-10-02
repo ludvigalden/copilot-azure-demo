@@ -14,5 +14,5 @@ npm run gen:api --prefix apps/web
 connector=apps/power-platform/solution/Connectors/ItSupportApi/apiDefinition.swagger.json
 mkdir -p "$(dirname "$connector")"
 dotnet hidi transform -d contracts/openapi/openapi.yaml -v 2.0 -f json --co -o "$connector"
-jq --arg h '@environmentVariables("itsupport_ApiHost")' '.host = $h' "$connector" > "$connector.tmp"
+jq --arg h '@environmentVariables("itsupport_ApiHost")' '.host = $h | .schemes = ["https"]' "$connector" > "$connector.tmp"
 mv "$connector.tmp" "$connector"

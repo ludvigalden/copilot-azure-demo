@@ -53,7 +53,7 @@ One topic, **Escalate to IT**, in the same agent:
    Formula mode (Power Fx), storing the result in
    `Topic.TicketSummary`:
 
-   ```
+   ```powerfx
    Concatenate(
        Topic.ShortDescription,
        " — reported by ",

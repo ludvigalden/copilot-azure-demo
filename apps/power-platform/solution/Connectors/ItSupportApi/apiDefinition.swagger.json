@@ -392,5 +392,8 @@
       "description": "IT support operations for the assistant, the portal and the agent."
     }
   ],
-  "host": "@environmentVariables(\"itsupport_ApiHost\")"
+  "host": "@environmentVariables(\"itsupport_ApiHost\")",
+  "schemes": [
+    "https"
+  ]
 }

@@ -25,10 +25,9 @@ INDEX_NAME = "kb"
 OPENAI_API_VERSION = "2024-10-21"
 OPENAI_TOKEN_SCOPE = "https://cognitiveservices.azure.com/.default"
 
-# The embedding deployment's rate limits at capacity 1 (verified against
-# the live deployment): 1 request and 1,000 tokens per 60-second renewal
-# period. The batch budget keeps a margin under the token limit and the
-# pause keeps consecutive requests outside one renewal period.
+# Embedding deployment rate limits at capacity 1 (verified live): one
+# request and 1,000 tokens per 60-second period. The batch budget stays
+# under the token cap; the pause spans renewal periods.
 EMBEDDING_BATCH_TOKENS = 700
 EMBEDDING_PAUSE_SECONDS = 65.0
 _CHARS_PER_TOKEN = 5
