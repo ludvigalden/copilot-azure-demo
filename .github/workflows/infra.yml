@@ -1,0 +1,70 @@
+name: Infra
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/terraform/main/**"
+      - ".github/workflows/infra.yml"
+  pull_request:
+    paths:
+      - "infra/terraform/main/**"
+      - ".github/workflows/infra.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: infra
+  cancel-in-progress: false
+
+env:
+  ARM_USE_OIDC: "true"
+  ARM_USE_AZUREAD: "true"
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  TF_VAR_prefix: ${{ vars.NAME_PREFIX }}
+  TF_VAR_cd_principal_object_id: ${{ vars.CD_PRINCIPAL_OBJECT_ID }}
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    environment: demo
+    defaults:
+      run:
+        working-directory: infra/terraform/main
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.4
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive
+
+      - name: Initialise
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${TF_VAR_prefix}-tfstate" \
+            -backend-config="storage_account_name=${TF_VAR_prefix}tfstate" \
+            -backend-config="use_oidc=true"
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Plan
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Apply
+        if: github.event_name != 'pull_request'
+        run: terraform apply -input=false -auto-approve tfplan
