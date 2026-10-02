@@ -64,9 +64,18 @@ else
     builder.Services.AddSingleton<ITicketService, TableTicketService>();
 }
 
-// Answers: the stub is Development-only; outside Development an answer
-// provider must be configured.
-if (dev && string.IsNullOrEmpty(cfg["OpenAI:Endpoint"]))
+// Answers: configured OpenAI and Search endpoints select retrieval-augmented
+// answering from the search index; the stub is Development-only; outside
+// Development an answer provider must be configured.
+var openAiEndpoint = cfg["OpenAI:Endpoint"];
+var searchEndpoint = cfg["Search:Endpoint"];
+if (!string.IsNullOrEmpty(openAiEndpoint) && !string.IsNullOrEmpty(searchEndpoint))
+{
+    builder.Services.AddSingleton(AzureRagAnswerProvider.CreateSearchClient(searchEndpoint));
+    builder.Services.AddSingleton(AzureRagAnswerProvider.CreateChatClient(openAiEndpoint));
+    builder.Services.AddSingleton<IAnswerProvider, AzureRagAnswerProvider>();
+}
+else if (dev && string.IsNullOrEmpty(cfg["OpenAI:Endpoint"]))
 {
     builder.Services.AddSingleton<IAnswerProvider, StubAnswerProvider>();
 }
