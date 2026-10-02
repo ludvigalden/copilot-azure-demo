@@ -33,6 +33,15 @@ variable "cd_principal_object_id" {
   type        = string
 }
 
+# Object ID of the person who runs Terraform locally. Empty in CD, which
+# turns the owner's two data-plane grants off; the workflow identity holds
+# the same roles through the CD assignments instead.
+variable "owner_principal_object_id" {
+  description = "Object ID of the local Terraform runner, if any."
+  type        = string
+  default     = ""
+}
+
 variable "servicenow_instance_url" {
   description = "ServiceNow instance URL; presence selects the ServiceNow ticket store over the built-in one."
   type        = string

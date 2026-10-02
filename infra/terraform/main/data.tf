@@ -103,18 +103,22 @@ resource "azurerm_role_assignment" "openai_user_cd" {
 }
 
 # The owner manages the index data plane locally (the apply identity reads
-# and writes the index directly) and can verify the data-plane paths. In
-# GitHub Actions the CD identity holds the same roles instead.
+# and writes the index directly) and can verify the data-plane paths. The
+# grants are off in CD, where the CD identity holds the same roles.
 resource "azurerm_role_assignment" "search_documents_owner" {
+  count = var.owner_principal_object_id != "" ? 1 : 0
+
   scope                = azurerm_search_service.search.id
   role_definition_name = "Search Index Data Contributor"
-  principal_id         = data.azurerm_client_config.current.object_id
+  principal_id         = var.owner_principal_object_id
 }
 
 resource "azurerm_role_assignment" "openai_user_owner" {
+  count = var.owner_principal_object_id != "" ? 1 : 0
+
   scope                = azurerm_cognitive_account.ai.id
   role_definition_name = "Cognitive Services OpenAI User"
-  principal_id         = data.azurerm_client_config.current.object_id
+  principal_id         = var.owner_principal_object_id
 }
 
 # The index is Terraform-owned data plane. The vectorizer and its key live
