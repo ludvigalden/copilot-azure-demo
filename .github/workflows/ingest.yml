@@ -37,9 +37,58 @@ jobs:
       - name: Chunk and validate the knowledge base
         run: uv run --project services/ingest ingest --kb kb --repo "$GITHUB_REPOSITORY" --dry-run
 
-  push:
+  # Staging first: it fills its own index on the shared search service and
+  # answers for the knowledge base before the production index converges.
+  push-staging:
     needs: validate
     if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: azure/login@v2
+        if: env.ACT != 'true'
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign in with the local staging credentials
+        if: env.ACT == 'true'
+        env:
+          ACT_ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ACT_ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+          ACT_ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+        run: |
+          az login --service-principal \
+            --username "$ACT_ARM_CLIENT_ID" \
+            --password "$ACT_ARM_CLIENT_SECRET" \
+            --tenant "$ACT_ARM_TENANT_ID" \
+            --output none
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Sync locked dependencies
+        run: uv sync --locked --project services/ingest
+
+      # The knowledge base lives on the shared service, so the endpoints
+      # come from the shared prefix while the index and deployment carry
+      # the staging names.
+      - name: Push the knowledge base into the staging index
+        run: >
+          uv run --project services/ingest ingest --kb kb
+          --repo "$GITHUB_REPOSITORY"
+          --search-endpoint "https://${{ vars.SHARED_PREFIX }}-srch.search.windows.net"
+          --openai-endpoint "https://${{ vars.SHARED_PREFIX }}-ai.cognitiveservices.azure.com/"
+          --index-name "${{ vars.INDEX_NAME || 'kb' }}"
+          --embedding-deployment "${{ vars.EMBEDDING_DEPLOYMENT_NAME || 'embedding' }}"
+
+  push:
+    needs: [validate, push-staging]
+    if: ${{ github.event_name != 'pull_request' && !github.event.act }}
     runs-on: ubuntu-latest
     environment: demo
     steps:

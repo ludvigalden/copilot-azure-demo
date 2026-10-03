@@ -16,24 +16,118 @@ permissions:
   contents: read
   id-token: write
 
-concurrency:
-  group: infra
-  cancel-in-progress: false
-
+# Every variable is environment-scoped, so the same expressions resolve
+# per job: the staging job reads the staging environment's prefix, shared
+# prefix, and state key; the production job reads its own. The state lives
+# in one container under two keys, and the federated credential the login
+# exchanges is environment-scoped on the CD application.
 env:
   ARM_USE_OIDC: "true"
   ARM_USE_AZUREAD: "true"
   ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
   ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
   ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  TFSTATE_RESOURCE_GROUP: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+  TFSTATE_STORAGE_ACCOUNT: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+  TFSTATE_KEY: ${{ vars.TFSTATE_KEY || 'main.tfstate' }}
   TF_VAR_prefix: ${{ vars.NAME_PREFIX }}
+  TF_VAR_shared_prefix: ${{ vars.SHARED_PREFIX }}
+  TF_VAR_index_name: ${{ vars.INDEX_NAME || 'kb' }}
+  TF_VAR_chat_deployment_name: ${{ vars.CHAT_DEPLOYMENT_NAME || 'chat' }}
+  TF_VAR_embedding_deployment_name: ${{ vars.EMBEDDING_DEPLOYMENT_NAME || 'embedding' }}
+  TF_VAR_shared_ai_account_key: ${{ secrets.SHARED_AI_ACCOUNT_KEY }}
   TF_VAR_cd_principal_object_id: ${{ vars.CD_PRINCIPAL_OBJECT_ID }}
   TF_VAR_owner_principal_object_id: ${{ vars.OWNER_PRINCIPAL_OBJECT_ID }}
+  TF_VAR_extra_redirect_uris: ${{ vars.EXTRA_REDIRECT_URIS || '[]' }}
 
 jobs:
-  terraform:
+  # Staging applies first: it proves the same configuration against its own
+  # resource group and state key before production touches the shared
+  # services. On pull requests both jobs stop at the plan.
+  terraform-staging:
+    runs-on: ubuntu-latest
+    environment: staging
+    concurrency:
+      group: infra-staging-${{ github.ref }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: infra/terraform/main
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: azure/login@v2
+        if: env.ACT != 'true'
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # The local loop signs in with a staging-scoped credential instead of
+      # the federated one, and the Terraform steps read the exported
+      # ARM_* variables: OpenID Connect does not exist outside Actions.
+      - name: Sign in with the local staging credentials
+        if: env.ACT == 'true'
+        env:
+          ACT_ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ACT_ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+          ACT_ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          ACT_ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+        run: |
+          az login --service-principal \
+            --username "$ACT_ARM_CLIENT_ID" \
+            --password "$ACT_ARM_CLIENT_SECRET" \
+            --tenant "$ACT_ARM_TENANT_ID" \
+            --output none
+          az account set --subscription "$ACT_ARM_SUBSCRIPTION_ID" --output none
+          {
+            echo "ARM_USE_OIDC=false"
+            echo "ARM_CLIENT_ID=$ACT_ARM_CLIENT_ID"
+            echo "ARM_CLIENT_SECRET=$ACT_ARM_CLIENT_SECRET"
+            echo "ARM_TENANT_ID=$ACT_ARM_TENANT_ID"
+            echo "ARM_SUBSCRIPTION_ID=$ACT_ARM_SUBSCRIPTION_ID"
+          } >> "$GITHUB_ENV"
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.4
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive
+
+      - name: Initialise
+        run: |
+          oidc_flag=""
+          if [ "$ACT" != "true" ]; then
+            oidc_flag="-backend-config=use_oidc=true"
+          fi
+          terraform init -input=false \
+            -backend-config="resource_group_name=$TFSTATE_RESOURCE_GROUP" \
+            -backend-config="storage_account_name=$TFSTATE_STORAGE_ACCOUNT" \
+            -backend-config="key=$TFSTATE_KEY" \
+            $oidc_flag
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Plan
+        run: terraform plan -input=false -out=tfplan
+
+      # Local runs stop at the plan; only Actions applies.
+      - name: Apply
+        if: github.event_name != 'pull_request' && env.ACT != 'true'
+        run: terraform apply -input=false -auto-approve tfplan
+
+  # Production runs after staging is green. The local loop stops at the
+  # staging plan, so this job never runs outside Actions.
+  terraform-demo:
+    needs: terraform-staging
+    if: ${{ !github.event.act }}
     runs-on: ubuntu-latest
     environment: demo
+    concurrency:
+      group: infra-demo-${{ github.ref }}
+      cancel-in-progress: false
     defaults:
       run:
         working-directory: infra/terraform/main
@@ -56,8 +150,9 @@ jobs:
       - name: Initialise
         run: |
           terraform init -input=false \
-            -backend-config="resource_group_name=${TF_VAR_prefix}-tfstate" \
-            -backend-config="storage_account_name=${TF_VAR_prefix}tfstate" \
+            -backend-config="resource_group_name=$TFSTATE_RESOURCE_GROUP" \
+            -backend-config="storage_account_name=$TFSTATE_STORAGE_ACCOUNT" \
+            -backend-config="key=$TFSTATE_KEY" \
             -backend-config="use_oidc=true"
 
       - name: Validate
@@ -67,5 +162,5 @@ jobs:
         run: terraform plan -input=false -out=tfplan
 
       - name: Apply
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && env.ACT != 'true'
         run: terraform apply -input=false -auto-approve tfplan
