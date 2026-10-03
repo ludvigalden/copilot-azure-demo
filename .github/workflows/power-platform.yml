@@ -68,13 +68,6 @@ jobs:
 
       - uses: microsoft/powerplatform-actions/actions-install@v1.9.2
 
-      - name: Pack the unmanaged solution
-        uses: microsoft/powerplatform-actions/pack-solution@v1.9.2
-        with:
-          solution-folder: ${{ env.SOLUTION_FOLDER }}
-          solution-file: ${{ env.SOLUTION_FILE }}
-          solution-type: Unmanaged
-
       - name: Resolve the host the connector should call
         env:
           PUBLIC_HOSTNAME: ${{ secrets.PUBLIC_HOSTNAME }}
@@ -91,12 +84,27 @@ jobs:
           fi
           echo "IT_SUPPORT_API_HOST=$host" >> "$GITHUB_ENV"
 
+      - name: Point the connector at the resolved host
+        run: |
+          jq --arg host "$IT_SUPPORT_API_HOST" \
+            '.host = $host' \
+            apps/power-platform/solution/Connector/itsup_ItSupportApi_openapidefinition.json > /tmp/host-swap.json
+          mv /tmp/host-swap.json apps/power-platform/solution/Connector/itsup_ItSupportApi_openapidefinition.json
+          jq -r .host apps/power-platform/solution/Connector/itsup_ItSupportApi_openapidefinition.json
+
       - name: Fill the deployment settings with the resolved host
         run: |
           jq --arg host "$IT_SUPPORT_API_HOST" \
-            '.EnvironmentVariables |= map(if .SchemaName == "itsupport_ApiHost" then .Value = $host else . end)' \
+            '.EnvironmentVariables |= map(if .SchemaName == "itsup_ApiHost" then .Value = $host else . end)' \
             apps/power-platform/deployment-settings.json > out/deployment-settings.json
           cat out/deployment-settings.json
+
+      - name: Pack the unmanaged solution
+        uses: microsoft/powerplatform-actions/pack-solution@v1.9.2
+        with:
+          solution-folder: ${{ env.SOLUTION_FOLDER }}
+          solution-file: ${{ env.SOLUTION_FILE }}
+          solution-type: Unmanaged
 
       - name: Import and publish the solution
         uses: microsoft/powerplatform-actions/import-solution@v1.9.2
@@ -108,6 +116,7 @@ jobs:
           use-deployment-settings-file: true
           deployment-settings-file: out/deployment-settings.json
           publish-changes: true
+          force-overwrite: true
 
       - name: Verify the connector registration in Dataverse
         env:
