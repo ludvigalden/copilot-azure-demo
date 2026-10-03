@@ -1,0 +1,10 @@
+<environmentvariabledefinition schemaname="itsup_ApiHost">
+  <displayname default="API host">
+    <label description="Host name of the IT Support API the custom connector calls. Filled at import time from the deployment settings, never defaulted in source." languagecode="1033" />
+  </displayname>
+  <introducedversion>1.0.0.0</introducedversion>
+  <iscustomizable>1</iscustomizable>
+  <isrequired>0</isrequired>
+  <secretstore>0</secretstore>
+  <type>100000000</type>
+</environmentvariabledefinition>

@@ -27,6 +27,18 @@
         <Language>1033</Language>
     </Languages>
     <WebResources />
-    <Connectors />
-    <EnvironmentVariables />
+    <Connectors>
+        <Connector>
+            <connectorid>7a1d5c3e-9b42-4e8f-a6d1-3c5f0b8e2a47</connectorid>
+            <description>The IT Support API custom connector: knowledge-base answers, profile lookup and ticket creation.</description>
+            <displayname>IT Support API</displayname>
+            <iconbrandcolor>#0f6cbd</iconbrandcolor>
+            <name>itsup_ItSupportApi</name>
+            <connectortype>1</connectortype>
+            <openapidefinition>/Connector/itsup_ItSupportApi_openapidefinition.json</openapidefinition>
+            <connectionparameters>/Connector/itsup_ItSupportApi_connectionparameters.json</connectionparameters>
+            <policytemplateinstances>/Connector/itsup_ItSupportApi_policytemplateinstances.json</policytemplateinstances>
+            <iconblob>/Connector/itsup_ItSupportApi_iconblob.png</iconblob>
+        </Connector>
+    </Connectors>
 </ImportExportXml>
