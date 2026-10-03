@@ -86,6 +86,7 @@ def embed_all(
     texts: Sequence[str],
     *,
     sleep: Callable[[float], None] = time.sleep,
+    model: str = EMBEDDING_DEPLOYMENT,
 ) -> list[list[float]]:
     """Embed the texts in quota-sized batches, preserving the input order.
 
@@ -98,7 +99,7 @@ def embed_all(
         if number:
             sleep(EMBEDDING_PAUSE_SECONDS)
         response = embeddings_client.embeddings.create(
-            model=EMBEDDING_DEPLOYMENT, input=batch
+            model=model, input=batch
         )
         embeddings.extend(
             item.embedding
@@ -136,10 +137,19 @@ def existing_ids(search_client) -> set[str]:
     return {result["id"] for result in results}
 
 
-def push_kb(chunks: Sequence[Chunk], search_client, embeddings_client) -> Summary:
+def push_kb(
+    chunks: Sequence[Chunk], search_client, embeddings_client, *, embedding_deployment: str = EMBEDDING_DEPLOYMENT
+) -> Summary:
     """Upload the chunks and delete whatever the index holds beyond them."""
     documents = (
-        to_documents(chunks, embed_all(embeddings_client, [c.content for c in chunks]))
+        to_documents(
+            chunks,
+            embed_all(
+                embeddings_client,
+                [c.content for c in chunks],
+                model=embedding_deployment,
+            ),
+        )
         if chunks
         else []
     )
