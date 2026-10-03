@@ -127,21 +127,31 @@ handles is the search index's Azure OpenAI vectorizer key, which it
 delivers through a write-only value that never lands in Terraform
 state or output. See ADR 0004 for the decisions behind this shape.
 
+The same root also describes **staging** under the `staging`
+environment: a second apply of `infra/terraform/main/` with its own
+prefix, resource group, and state key that consumes the shared search
+service, AI Services account, container apps environment, and Entra
+application by reference and duplicates the rest (container app,
+identity, tickets account, bot). Staging applies before production in
+the same workflow runs, so every change answers for itself in staging
+first; its knowledge lives in its own index on the shared service.
+
 Five workflows in `.github/workflows/` run the pipeline:
 
 - `ci.yml` regenerates the contract outputs and fails on drift, and
   runs the tests and lints of the API, the SPA and both Python
   projects; it gates every pull request.
-- `infra.yml` plans the `main/` root — the bot registration
-  included — on pull requests and applies it on pushes to `main`,
-  authenticating to Azure over OpenID Connect with no stored cloud
-  secrets.
+- `infra.yml` plans the `main/` root for both environments on pull
+  requests and applies staging first and production after it on
+  pushes to `main`, authenticating to Azure over OpenID Connect with
+  no stored cloud secrets.
 - `app.yml` builds the one container image and stores it in the
   GitHub Container Registry — images live with the repository, not
-  in a cloud registry — then points the container app at the new
-  image on the `demo` environment.
+  in a cloud registry — then points the staging container app at the
+  new image, and production's after staging is serving it.
 - `ingest.yml` runs the knowledge-base ingester on a weekly schedule
-  and on every change to the articles or the ingester.
+  and on every change to the articles or the ingester; staging's
+  index is filled first and production's after it.
 - `power-platform.yml` packs the unmanaged solution from
   `apps/power-platform/` on every pull request, and — once the
   environment variable is configured — imports and publishes it with
@@ -155,6 +165,12 @@ creates the container app with a placeholder image and leaves the
 image to `app.yml`: the app serves the placeholder until that
 workflow's first run, and the freshly built image from then on.
 
+The workflows also run on the workstation against staging before a
+change is pushed: [docs/local-loop.md](docs/local-loop.md) carries
+the setup and the one command per workflow, and every mutating step
+(apply, registry push, production deploy) is gated so a local run
+stops where its credentials end.
+
 None of this is needed to run the application locally; the local
 development section above covers the zero-Azure setup.
 
@@ -164,6 +180,9 @@ development section above covers the zero-Azure setup.
 - [ADR 0002](docs/adr/0002-contract-first-http-api.md) — the contract-first generation chain and the drift gate.
 - [ADR 0003](docs/adr/0003-configuration-selects-implementation.md) — how configuration selects real implementations or stand-ins.
 - [ADR 0004](docs/adr/0004-infrastructure-and-delivery.md) — the infrastructure and delivery decisions.
+- [Local workflow runs](docs/local-loop.md) — running the
+  deployment workflows on the workstation against staging before a
+  push.
 - [Copilot Studio agent design](docs/copilot-studio-agent.md) — the
   agent, its escalation topic and its agent flow.
 - [Power Platform setup checklist](docs/power-platform-setup.md) —

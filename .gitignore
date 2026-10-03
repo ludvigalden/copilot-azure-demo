@@ -12,6 +12,7 @@
 !dotnet-tools.json
 !eval/
 !kb/
+!scripts/
 !services/
 **/.dev.vars
 **/.dev.vars.*
