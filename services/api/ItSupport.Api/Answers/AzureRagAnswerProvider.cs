@@ -19,18 +19,30 @@ namespace ItSupport.Api.Answers;
 /// the query is rejected with 400 until the service is upgraded, even though
 /// the index itself carries the semantic configuration.
 /// </remarks>
-public sealed class AzureRagAnswerProvider(SearchClient search, ChatClient chat) : IAnswerProvider
+public sealed class AzureRagAnswerProvider(
+    SearchClient search,
+    ChatClient chat,
+    string? semanticConfigurationName = null) : IAnswerProvider
 {
+    // The defaults are the primary environment's names; a deployment that
+    // shares another environment's services overrides the index and chat
+    // deployment through configuration, so one image serves both.
     public const string IndexName = "kb";
     public const string ChatDeploymentName = "chat";
     public const string SemanticConfigurationName = "kb-semantic";
     private const int RetrievedChunks = 3;
     private const int VectorNeighbors = 5;
 
-    public static SearchClient CreateSearchClient(string endpoint) =>
+    private readonly string semanticConfigurationName = semanticConfigurationName ?? SemanticConfigurationName;
+
+    // The semantic configuration inside an index is named after the index
+    // itself, so the derived name follows the configured index everywhere.
+    public static string SemanticConfigurationNameFor(string indexName) => $"{indexName}-semantic";
+
+    public static SearchClient CreateSearchClient(string endpoint, string indexName = IndexName) =>
         new(
             new Uri(endpoint),
-            IndexName,
+            indexName,
             new DefaultAzureCredential(),
             new SearchClientOptions(SearchClientOptions.ServiceVersion.V2024_07_01)
             {
@@ -39,9 +51,9 @@ public sealed class AzureRagAnswerProvider(SearchClient search, ChatClient chat)
                 Serializer = new JsonObjectSerializer(new JsonSerializerOptions(JsonSerializerDefaults.Web)),
             });
 
-    public static ChatClient CreateChatClient(string endpoint) =>
+    public static ChatClient CreateChatClient(string endpoint, string deploymentName = ChatDeploymentName) =>
         new AzureOpenAIClient(new Uri(endpoint), new DefaultAzureCredential())
-            .GetChatClient(ChatDeploymentName);
+            .GetChatClient(deploymentName);
 
     public async Task<Answer> AnswerAsync(string question, CancellationToken cancellationToken = default)
     {
@@ -73,14 +85,14 @@ public sealed class AzureRagAnswerProvider(SearchClient search, ChatClient chat)
             .Where(part => part.Kind == ChatMessageContentPartKind.Text)
             .Select(part => part.Text));
 
-    public static SearchOptions BuildSearchOptions(string question)
+    public static SearchOptions BuildSearchOptions(string question, string? semanticConfigurationName = null)
     {
         var options = new SearchOptions
         {
             QueryType = SearchQueryType.Semantic,
             SemanticSearch = new SemanticSearchOptions
             {
-                SemanticConfigurationName = SemanticConfigurationName,
+                SemanticConfigurationName = semanticConfigurationName ?? SemanticConfigurationName,
             },
             Size = RetrievedChunks,
             VectorSearch = new VectorSearchOptions(),
@@ -124,7 +136,7 @@ public sealed class AzureRagAnswerProvider(SearchClient search, ChatClient chat)
         CancellationToken cancellationToken)
     {
         var response = await search
-            .SearchAsync<KbDocument>(question, BuildSearchOptions(question), cancellationToken)
+            .SearchAsync<KbDocument>(question, BuildSearchOptions(question, semanticConfigurationName), cancellationToken)
             .ConfigureAwait(false);
 
         var documents = new List<KbDocument>();

@@ -124,14 +124,19 @@ else
 
 // Answers: configured OpenAI and Search endpoints select retrieval-augmented
 // answering from the search index; the stub is Development-only; outside
-// Development an answer provider must be configured.
+// Development an answer provider must be configured. The index and chat
+// deployment default to the primary environment's names; a deployment
+// sharing another environment's services overrides both here.
 var openAiEndpoint = cfg["OpenAI:Endpoint"];
 var searchEndpoint = cfg["Search:Endpoint"];
+var indexName = cfg["Search:IndexName"] ?? AzureRagAnswerProvider.IndexName;
+var chatDeploymentName = cfg["OpenAI:DeploymentName"] ?? AzureRagAnswerProvider.ChatDeploymentName;
 if (!string.IsNullOrEmpty(openAiEndpoint) && !string.IsNullOrEmpty(searchEndpoint))
 {
-    builder.Services.AddSingleton(AzureRagAnswerProvider.CreateSearchClient(searchEndpoint));
-    builder.Services.AddSingleton(AzureRagAnswerProvider.CreateChatClient(openAiEndpoint));
-    builder.Services.AddSingleton<IAnswerProvider, AzureRagAnswerProvider>();
+    var searchClient = AzureRagAnswerProvider.CreateSearchClient(searchEndpoint, indexName);
+    var chatClient = AzureRagAnswerProvider.CreateChatClient(openAiEndpoint, chatDeploymentName);
+    builder.Services.AddSingleton<IAnswerProvider>(
+        new AzureRagAnswerProvider(searchClient, chatClient, AzureRagAnswerProvider.SemanticConfigurationNameFor(indexName)));
 }
 else if (dev && string.IsNullOrEmpty(cfg["OpenAI:Endpoint"]))
 {
