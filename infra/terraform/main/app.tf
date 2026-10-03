@@ -1,4 +1,8 @@
+# The environment is owned by the default apply and consumed by name on a
+# shared run, whose own app joins it from its own resource group.
 resource "azurerm_container_app_environment" "env" {
+  count = local.owns_shared ? 1 : 0
+
   name                = local.environment_name
   resource_group_name = data.azurerm_resource_group.app.name
   location            = data.azurerm_resource_group.app.location
@@ -15,7 +19,7 @@ resource "azurerm_container_app_environment" "env" {
 # placeholder image on every deploy. Consumption plan, scaled to zero.
 resource "azurerm_container_app" "app" {
   name                         = local.container_app_name
-  container_app_environment_id = azurerm_container_app_environment.env.id
+  container_app_environment_id = local.app_environment_id
   resource_group_name          = data.azurerm_resource_group.app.name
   revision_mode                = "Single"
   workload_profile_name        = "Consumption"
@@ -47,7 +51,7 @@ resource "azurerm_container_app" "app" {
       }
       env {
         name  = "OpenAI__Endpoint"
-        value = azurerm_cognitive_account.ai.endpoint
+        value = local.openai_endpoint
       }
       env {
         name  = "Search__Endpoint"
@@ -59,7 +63,7 @@ resource "azurerm_container_app" "app" {
       }
       env {
         name  = "AzureAd__ClientId"
-        value = azuread_application.api.client_id
+        value = local.api_application_client_id
       }
       # Tokens name this URI as their audience, so the API must accept it.
       env {
@@ -81,6 +85,14 @@ resource "azurerm_container_app" "app" {
       env {
         name  = "AzureAd__ClientCredentials__0__ManagedIdentityClientId"
         value = azurerm_user_assigned_identity.app.client_id
+      }
+
+      dynamic "env" {
+        for_each = local.app_config_overrides
+        content {
+          name  = env.key
+          value = env.value
+        }
       }
 
       dynamic "env" {

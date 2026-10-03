@@ -19,6 +19,8 @@ resource "azurerm_role_assignment" "tickets_table_app" {
 }
 
 resource "azurerm_search_service" "search" {
+  count = local.owns_shared ? 1 : 0
+
   name                = local.search_name
   resource_group_name = data.azurerm_resource_group.app.name
   location            = data.azurerm_resource_group.app.location
@@ -45,7 +47,7 @@ resource "azurerm_search_service" "search" {
 # so the update goes through the management API directly.
 resource "azapi_update_resource" "search_semantic_plan" {
   type        = "Microsoft.Search/searchServices@2025-05-01"
-  resource_id = azurerm_search_service.search.id
+  resource_id = local.search_service_id
 
   body = {
     properties = {
@@ -55,13 +57,17 @@ resource "azapi_update_resource" "search_semantic_plan" {
 }
 
 resource "azurerm_role_assignment" "search_documents_app" {
-  scope                = azurerm_search_service.search.id
+  scope                = local.search_service_id
   role_definition_name = "Search Index Data Contributor"
   principal_id         = azurerm_user_assigned_identity.app.principal_id
 }
 
+# The CD identity's index-data roles live in the owner state; a shared run
+# skips them so the same assignment is never created twice.
 resource "azurerm_role_assignment" "search_documents_cd" {
-  scope                = azurerm_search_service.search.id
+  count = local.owns_shared ? 1 : 0
+
+  scope                = local.search_service_id
   role_definition_name = "Search Index Data Contributor"
   principal_id         = var.cd_principal_object_id
 }
@@ -70,6 +76,8 @@ resource "azurerm_role_assignment" "search_documents_cd" {
 # the index vectorizer below, whose key Terraform moves into the index
 # definition itself. Every other caller uses Entra identities and RBAC.
 resource "azurerm_cognitive_account" "ai" {
+  count = local.owns_shared ? 1 : 0
+
   name                  = local.ai_name
   resource_group_name   = data.azurerm_resource_group.app.name
   location              = data.azurerm_resource_group.app.location
@@ -80,8 +88,8 @@ resource "azurerm_cognitive_account" "ai" {
 }
 
 resource "azurerm_cognitive_deployment" "chat" {
-  name                 = "chat"
-  cognitive_account_id = azurerm_cognitive_account.ai.id
+  name                 = var.chat_deployment_name
+  cognitive_account_id = local.ai_account_id
 
   model {
     format  = "OpenAI"
@@ -99,8 +107,8 @@ resource "azurerm_cognitive_deployment" "chat" {
 }
 
 resource "azurerm_cognitive_deployment" "embedding" {
-  name                 = "embedding"
-  cognitive_account_id = azurerm_cognitive_account.ai.id
+  name                 = var.embedding_deployment_name
+  cognitive_account_id = local.ai_account_id
 
   model {
     format  = "OpenAI"
@@ -115,13 +123,15 @@ resource "azurerm_cognitive_deployment" "embedding" {
 }
 
 resource "azurerm_role_assignment" "openai_user_app" {
-  scope                = azurerm_cognitive_account.ai.id
+  scope                = local.ai_account_id
   role_definition_name = "Cognitive Services OpenAI User"
   principal_id         = azurerm_user_assigned_identity.app.principal_id
 }
 
 resource "azurerm_role_assignment" "openai_user_cd" {
-  scope                = azurerm_cognitive_account.ai.id
+  count = local.owns_shared ? 1 : 0
+
+  scope                = local.ai_account_id
   role_definition_name = "Cognitive Services OpenAI User"
   principal_id         = var.cd_principal_object_id
 }
@@ -132,7 +142,7 @@ resource "azurerm_role_assignment" "openai_user_cd" {
 resource "azurerm_role_assignment" "search_documents_owner" {
   count = var.owner_principal_object_id != "" ? 1 : 0
 
-  scope                = azurerm_search_service.search.id
+  scope                = local.search_service_id
   role_definition_name = "Search Index Data Contributor"
   principal_id         = var.owner_principal_object_id
 }
@@ -140,7 +150,7 @@ resource "azurerm_role_assignment" "search_documents_owner" {
 resource "azurerm_role_assignment" "openai_user_owner" {
   count = var.owner_principal_object_id != "" ? 1 : 0
 
-  scope                = azurerm_cognitive_account.ai.id
+  scope                = local.ai_account_id
   role_definition_name = "Cognitive Services OpenAI User"
   principal_id         = var.owner_principal_object_id
 }
@@ -149,14 +159,16 @@ resource "azurerm_role_assignment" "openai_user_owner" {
 # in the write-only sensitive body, merge-patched onto the request at apply
 # time: the key reaches the search service directly from the AI Services
 # account and is never stored in state, printed as output, or handled by a
-# person. The ingester only pushes and deletes documents.
+# person. The ingester only pushes and deletes documents. Every
+# index-internal name follows the index name, so a shared run's copy never
+# collides with the owner's.
 resource "azapi_data_plane_resource" "index" {
   type      = "Microsoft.Search/searchServices/indexes@2024-07-01"
-  parent_id = "${azurerm_search_service.search.name}.search.windows.net"
-  name      = "kb"
+  parent_id = "${local.search_name_effective}.search.windows.net"
+  name      = var.index_name
 
   body = {
-    name = "kb"
+    name = var.index_name
     fields = [
       {
         name = "id"
@@ -184,13 +196,13 @@ resource "azapi_data_plane_resource" "index" {
         type                = "Collection(Edm.Single)"
         searchable          = true
         dimensions          = 1536
-        vectorSearchProfile = "kb-profile"
+        vectorSearchProfile = "${var.index_name}-profile"
       },
     ]
     vectorSearch = {
       algorithms = [
         {
-          name = "kb-algorithm"
+          name = "${var.index_name}-algorithm"
           kind = "hnsw"
           hnswParameters = {
             metric = "cosine"
@@ -199,8 +211,8 @@ resource "azapi_data_plane_resource" "index" {
       ]
       profiles = [
         {
-          name       = "kb-profile"
-          algorithm  = "kb-algorithm"
+          name       = "${var.index_name}-profile"
+          algorithm  = "${var.index_name}-algorithm"
           vectorizer = "openai-vectorizer"
         },
       ]
@@ -208,7 +220,7 @@ resource "azapi_data_plane_resource" "index" {
     semantic = {
       configurations = [
         {
-          name = "kb-semantic"
+          name = "${var.index_name}-semantic"
           prioritizedFields = {
             titleField               = { fieldName = "title" }
             prioritizedContentFields = [{ fieldName = "content" }]
@@ -225,10 +237,10 @@ resource "azapi_data_plane_resource" "index" {
           name = "openai-vectorizer"
           kind = "azureOpenAI"
           azureOpenAIParameters = {
-            resourceUri  = azurerm_cognitive_account.ai.endpoint
+            resourceUri  = local.openai_endpoint
             deploymentId = azurerm_cognitive_deployment.embedding.name
             modelName    = "text-embedding-3-small"
-            apiKey       = azurerm_cognitive_account.ai.primary_access_key
+            apiKey       = local.vectorizer_api_key
           }
         },
       ]

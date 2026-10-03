@@ -22,7 +22,7 @@ resource "azurerm_container_app_environment_managed_certificate" "public" {
   count = local.bind_domain
 
   name                         = "${var.prefix}-cert"
-  container_app_environment_id = azurerm_container_app_environment.env.id
+  container_app_environment_id = local.app_environment_id
   subject_name                 = var.public_hostname
   domain_control_validation    = "CNAME"
 

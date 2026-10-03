@@ -18,7 +18,7 @@ output "search_endpoint" {
 }
 
 output "openai_endpoint" {
-  value = azurerm_cognitive_account.ai.endpoint
+  value = local.openai_endpoint
 }
 
 output "resource_group_name" {

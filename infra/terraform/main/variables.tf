@@ -42,6 +42,63 @@ variable "owner_principal_object_id" {
   default     = ""
 }
 
+# Prefix of the environment whose shared resources this root consumes.
+# Empty, the default, means this root owns its search service, AI Services
+# account, container apps environment, and Entra API application outright;
+# the production apply runs that way. A non-empty value turns those four
+# into data sources of the named environment and scopes this root's own
+# resources (container app, identity, tickets account, bot, index,
+# deployments) to them, which is how staging rides on production's shared
+# services with its own resource group, state, and prefix.
+variable "shared_prefix" {
+  description = "Prefix of the environment whose shared resources this root consumes; empty when this root owns them."
+  type        = string
+  default     = ""
+}
+
+# Names of the index and deployments this root creates. The defaults are
+# the production literals; a shared-resources run renames its copies so
+# both environments fit one search service (three-index cap) and one AI
+# account. Derived index-internal names follow the index name.
+variable "index_name" {
+  description = "Name of the AI Search index this root owns."
+  type        = string
+  default     = "kb"
+}
+
+variable "chat_deployment_name" {
+  description = "Name of the chat-completion deployment this root owns."
+  type        = string
+  default     = "chat"
+}
+
+variable "embedding_deployment_name" {
+  description = "Name of the embedding deployment this root owns and the index vectorizer points at."
+  type        = string
+  default     = "embedding"
+}
+
+# Redirect URIs appended to the API application when this root owns it.
+# A shared-resources run cannot add its own: the application is owned by
+# the owner root, which carries the shared run's host here. Empty by
+# default, so the owner plan is unchanged until a value is set.
+variable "extra_redirect_uris" {
+  description = "Additional SPA redirect URIs for the owned API application; empty in the default apply."
+  type        = list(string)
+  default     = []
+}
+
+# Key of the shared AI Services account, passed out of band by a run that
+# consumes the account without being able to list its keys (the local
+# loop's apply identity is read-only on the owner group). The CI identity
+# lists the key itself and never sets this. Empty in the owner apply.
+variable "shared_ai_account_key" {
+  description = "Access key of the shared AI Services account; empty when the root can list keys itself."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "servicenow_instance_url" {
   description = "ServiceNow instance URL; presence selects the ServiceNow ticket store over the built-in one."
   type        = string

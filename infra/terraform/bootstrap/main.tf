@@ -167,3 +167,45 @@ resource "azuread_service_principal_delegated_permission_grant" "cd_dynamics_crm
   service_principal_object_id          = azuread_service_principal.cd.object_id
   resource_service_principal_object_id = azuread_service_principal.dynamics_crm.object_id
 }
+
+# The staging environment: its own resource group so its duplicated
+# resources (container app, identity, tickets account, bot) live apart
+# from production's while consuming the shared services, and the same CD
+# grant pair scoped to it. The staging apply is gated on this existing.
+resource "azurerm_resource_group" "staging" {
+  name     = "${var.prefix}-staging-rg"
+  location = local.location
+}
+
+resource "azurerm_role_assignment" "cd_contributor_staging" {
+  scope                = azurerm_resource_group.staging.id
+  role_definition_name = "Contributor"
+  principal_id         = azuread_service_principal.cd.object_id
+}
+
+resource "azurerm_role_assignment" "cd_rbac_admin_staging" {
+  scope                = azurerm_resource_group.staging.id
+  role_definition_name = "Role Based Access Control Administrator"
+  principal_id         = azuread_service_principal.cd.object_id
+}
+
+# GitHub's environment-scoped OIDC subjects for the staging environment,
+# mirroring the demo pair: the name form and the immutable owner/repository
+# id form GitHub puts on environment tokens.
+resource "azuread_application_federated_identity_credential" "cd_staging" {
+  application_id = azuread_application.cd.id
+  display_name   = "github-actions-staging"
+  description    = "GitHub Actions deploys from the staging environment of ${var.github_repository}."
+  audiences      = ["api://AzureADTokenExchange"]
+  issuer         = "https://token.actions.githubusercontent.com"
+  subject        = "repo:${var.github_repository}:environment:staging"
+}
+
+resource "azuread_application_federated_identity_credential" "cd_staging_ids" {
+  application_id = azuread_application.cd.id
+  display_name   = "github-actions-staging-ids"
+  description    = "The numeric subject form GitHub puts on environment-scoped tokens for ${var.github_repository}."
+  audiences      = ["api://AzureADTokenExchange"]
+  issuer         = "https://token.actions.githubusercontent.com"
+  subject        = "repo:ludvigalden@30798446/copilot-azure-demo@1399509581:environment:staging"
+}
