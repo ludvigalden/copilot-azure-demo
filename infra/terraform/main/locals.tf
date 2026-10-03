@@ -26,6 +26,11 @@ locals {
   app_fqdn   = "${local.container_app_name}.${azurerm_container_app_environment.env.default_domain}"
   public_url = var.public_hostname != "" ? "https://${var.public_hostname}/" : ""
 
+  # The bot's messaging endpoint, registered with Bot Framework: the
+  # custom hostname when bound, otherwise the container app's default
+  # domain, always at the agent's /api/bot/messages route.
+  bot_endpoint = "https://${var.public_hostname != "" ? var.public_hostname : local.app_fqdn}/api/bot/messages"
+
   redirect_uris = compact([
     local.public_url,
     "http://localhost:5173/",

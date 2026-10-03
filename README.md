@@ -115,8 +115,13 @@ locally, because nothing else can create the state store the
 pipeline depends on. `main/` owns every application resource: Azure
 OpenAI with a chat and an embedding model deployment, Azure AI
 Search on the free tier holding the Terraform-managed knowledge-base
-index, Table Storage for tickets, and one Azure Container App that
-scales to zero. Azure access rides managed identities and
+index, Table Storage for tickets, one Azure Container App that
+scales to zero, and the Azure Bot registration that points Bot
+Framework channels at the app's `/api/bot/messages` endpoint. The
+bot's Microsoft App identity is the application's user-assigned
+managed identity — the bot's app ID is that identity's client ID —
+so channel messages authenticate without a client secret anywhere.
+Azure access rides managed identities and
 least-privilege role assignments; the one credential Terraform
 handles is the search index's Azure OpenAI vectorizer key, which it
 delivers through a write-only value that never lands in Terraform
@@ -127,9 +132,10 @@ Five workflows in `.github/workflows/` run the pipeline:
 - `ci.yml` regenerates the contract outputs and fails on drift, and
   runs the tests and lints of the API, the SPA and both Python
   projects; it gates every pull request.
-- `infra.yml` plans the `main/` root on pull requests and applies it
-  on pushes to `main`, authenticating to Azure over OpenID Connect
-  with no stored cloud secrets.
+- `infra.yml` plans the `main/` root — the bot registration
+  included — on pull requests and applies it on pushes to `main`,
+  authenticating to Azure over OpenID Connect with no stored cloud
+  secrets.
 - `app.yml` builds the one container image and stores it in the
   GitHub Container Registry — images live with the repository, not
   in a cloud registry — then points the container app at the new
