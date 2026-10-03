@@ -94,6 +94,7 @@ jobs:
 
       - name: Fill the deployment settings with the resolved host
         run: |
+          mkdir -p out
           jq --arg host "$IT_SUPPORT_API_HOST" \
             '.EnvironmentVariables |= map(if .SchemaName == "itsup_ApiHost" then .Value = $host else . end)' \
             apps/power-platform/deployment-settings.json > out/deployment-settings.json
