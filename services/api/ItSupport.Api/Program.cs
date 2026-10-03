@@ -98,20 +98,27 @@ else
     builder.Services.AddSingleton<ITicketService>(sp =>
     {
         var uri = cfg["Tickets:ServiceUri"];
-        if (string.IsNullOrEmpty(uri))
+        if (!string.IsNullOrEmpty(uri))
         {
-            if (dev)
-            {
-                uri = "http://127.0.0.1:10002/devstoreaccount1";
-            }
-            else
-            {
-                throw new InvalidOperationException(
-                    "Tickets:ServiceUri is required outside Development.");
-            }
+            return new TableTicketService(new TableServiceClient(
+                new Uri(uri), new DefaultAzureCredential()));
         }
+
+        // Development without Tickets:ServiceUri targets local Azurite, which
+        // authenticates with the well-known development account over
+        // shared-key: Azurite does not speak Entra, and Azure.Core refuses
+        // bearer tokens on non-TLS endpoints.
+        if (!dev)
+        {
+            throw new InvalidOperationException(
+                "Tickets:ServiceUri is required outside Development.");
+        }
+
         return new TableTicketService(new TableServiceClient(
-            new Uri(uri), new DefaultAzureCredential()));
+            new Uri("http://127.0.0.1:10002/devstoreaccount1"),
+            new TableSharedKeyCredential(
+                "devstoreaccount1",
+                "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==")));
     });
 }
 
