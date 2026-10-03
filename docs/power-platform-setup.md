@@ -52,7 +52,7 @@ internal names.
    The connector record's full serialization is pinned by the first
    real export: if the import rejects the connector component, create
    the connector in the maker portal from the generated
-   `Connectors/ItSupportApi/apiDefinition.swagger.json`, add it to the
+   `Connector/itsup_ItSupportApi_openapidefinition.json`, add it to the
    `itsupport` solution, export, unpack, and commit the result —
    that export is the authoritative form the hand-authored layout was
    built to match.
@@ -79,8 +79,9 @@ internal names.
 
      Then re-run the connection test.
 
-   - **The connector.** The solution import registers `ItSupportApi`
-     as a custom connector in the environment. In the agent's
+   - **The connector.** The solution import registers the IT Support
+     API custom connector (`itsup_ItSupportApi`) in the environment.
+     In the agent's
      **Tools** pane, add a tool and pick it from the custom
      connectors; if the agent was built before the import ran,
      refresh the connector list first. Adding it asks for a

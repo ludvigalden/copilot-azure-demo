@@ -32,7 +32,8 @@ solution's environment:
   when the user asks for a human or the question is not covered by
   the knowledge base. Never guess an answer that the knowledge base
   does not support.
-- **Tools.** The `ItSupportApi` custom connector, imported by the
+- **Tools.** The IT Support API custom connector (the solution's
+  `itsup_ItSupportApi`), imported by the
   solution, with one action enabled at the agent level:
   `GetMyProfile` (`GET /me`), returning the signed-in caller's
   display name and mail. Ticket creation goes through the agent flow
@@ -108,7 +109,7 @@ flow** trigger:
 
 1. **Trigger.** `When an agent calls the flow`, with one text input:
    `summary`.
-2. **Action.** The `ItSupportApi` custom connector's `CreateTicket`
+2. **Action.** The IT Support API custom connector's `CreateTicket`
    operation (`POST /tickets`): `shortDescription` bound to the
    trigger's summary. Agent flows are Logic Apps workflows: the
    binding is a workflow-definition expression,
