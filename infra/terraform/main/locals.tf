@@ -4,15 +4,17 @@ locals {
   # instead of owning them; the owner apply runs with the variable empty.
   owns_shared = var.shared_prefix == ""
 
-  # A shared run owns a resource group of its own while consuming the
-  # shared services from the owner's group.
-  resource_group_name = local.owns_shared ? "${var.prefix}-rg" : "${var.shared_prefix}-rg"
-  environment_name    = "${var.prefix}-env"
-  container_app_name  = "${var.prefix}-app"
-  identity_name       = "${var.prefix}-identity"
-  search_name         = "${var.prefix}-srch"
-  ai_name             = "${var.prefix}-ai"
-  tickets_account     = "${replace(var.prefix, "-", "")}tickets"
+  # A shared run owns a resource group of its own (its duplicated
+  # resources live there) while consuming the shared services from the
+  # owner's group, whose name derives from the shared prefix.
+  resource_group_name        = "${var.prefix}-rg"
+  shared_resource_group_name = "${coalesce(var.shared_prefix, var.prefix)}-rg"
+  environment_name           = "${var.prefix}-env"
+  container_app_name         = "${var.prefix}-app"
+  identity_name              = "${var.prefix}-identity"
+  search_name                = "${var.prefix}-srch"
+  ai_name                    = "${var.prefix}-ai"
+  tickets_account            = "${replace(var.prefix, "-", "")}tickets"
 
   # Name of the one container in the container app.
   container_name = "it-support"
@@ -60,7 +62,7 @@ locals {
   ai_account_id = local.owns_shared ? one(azurerm_cognitive_account.ai[*].id) : format(
     "/subscriptions/%s/resourceGroups/%s/providers/Microsoft.CognitiveServices/accounts/%s-ai",
     data.azurerm_client_config.current.subscription_id,
-    local.resource_group_name,
+    local.shared_resource_group_name,
     var.shared_prefix,
   )
 
@@ -132,14 +134,14 @@ data "azurerm_search_service" "shared" {
   count = local.owns_shared ? 0 : 1
 
   name                = "${var.shared_prefix}-srch"
-  resource_group_name = local.resource_group_name
+  resource_group_name = local.shared_resource_group_name
 }
 
 data "azurerm_container_app_environment" "shared" {
   count = local.owns_shared ? 0 : 1
 
   name                = "${var.shared_prefix}-env"
-  resource_group_name = local.resource_group_name
+  resource_group_name = local.shared_resource_group_name
 }
 
 data "azuread_application" "shared_api" {
@@ -154,5 +156,5 @@ data "azurerm_cognitive_account" "shared" {
   count = (local.owns_shared || var.shared_ai_account_key != "") ? 0 : 1
 
   name                = "${var.shared_prefix}-ai"
-  resource_group_name = local.resource_group_name
+  resource_group_name = local.shared_resource_group_name
 }

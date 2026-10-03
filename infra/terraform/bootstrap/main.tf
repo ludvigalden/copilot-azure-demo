@@ -162,6 +162,19 @@ resource "azuread_app_role_assignment" "cd_graph_owned_apps" {
   resource_object_id  = data.azuread_service_principal.graph.object_id
 }
 
+# The API application this pipeline creates does not list its creator as an
+# owner, and the CD identity manages only what it owns — so the shared run
+# could not attach its managed identity's federated credential to it. The
+# ownership record closes that gap, applied once from the bootstrap root.
+data "azuread_application" "api" {
+  display_name = "${var.prefix}-api"
+}
+
+resource "azuread_application_owner" "cd_api" {
+  application_id  = data.azuread_application.api.id
+  owner_object_id = azuread_service_principal.cd.object_id
+}
+
 resource "azuread_service_principal_delegated_permission_grant" "cd_dynamics_crm" {
   claim_values                         = ["user_impersonation"]
   service_principal_object_id          = azuread_service_principal.cd.object_id

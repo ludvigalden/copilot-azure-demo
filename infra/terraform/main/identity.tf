@@ -46,6 +46,13 @@ resource "azuread_application" "api" {
       type = "Scope"
     }
   }
+
+  lifecycle {
+    # Ownership of the application lives in the bootstrap root, which also
+    # grants the CD identity its ownership-based application rights; this
+    # resource leaves the owners collection alone.
+    ignore_changes = [owners]
+  }
 }
 
 # The API is a token resource, so its service principal must exist for
