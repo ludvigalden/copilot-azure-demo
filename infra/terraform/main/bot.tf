@@ -21,3 +21,17 @@ resource "azurerm_bot_service_azure_bot" "bot" {
   endpoint                     = local.bot_endpoint
   local_authentication_enabled = false
 }
+
+# The Direct Line channel gives headless clients a signed REST surface to
+# the bot; the Web Chat channel's site secret only serves the web chat
+# token server, so scripted verification and tooling talk Direct Line.
+resource "azurerm_bot_channel_directline" "directline" {
+  bot_name            = azurerm_bot_service_azure_bot.bot.name
+  resource_group_name = data.azurerm_resource_group.app.name
+  location            = azurerm_bot_service_azure_bot.bot.location
+
+  site {
+    name       = "headless-default"
+    v3_allowed = true
+  }
+}
