@@ -1,10 +1,10 @@
 using System.Text;
+using Azure.Data.Tables;
 using Azure.Identity;
 using ItSupport.Api.Answers;
 using ItSupport.Api.Identity;
 using ItSupport.Api.Tickets;
 using Microsoft.AspNetCore.Authentication;
-using Microsoft.Extensions.Azure;
 using Microsoft.Extensions.Options;
 using Microsoft.Identity.Web;
 
@@ -56,12 +56,29 @@ if (!string.IsNullOrEmpty(cfg["ServiceNow:InstanceUrl"]))
 }
 else
 {
-    builder.Services.AddAzureClients(tickets =>
+    // Terraform publishes the table service URI under Tickets:ServiceUri.
+    // The Azure client factory only maps convention-named keys (Endpoint),
+    // so the client is constructed directly from the published value; the
+    // registration resolves on first use, which keeps the tests hermetic:
+    // they replace ITicketService before it is ever resolved.
+    builder.Services.AddSingleton<ITicketService>(sp =>
     {
-        tickets.AddTableServiceClient(cfg.GetSection("Tickets"));
-        tickets.UseCredential(new DefaultAzureCredential());
+        var uri = cfg["Tickets:ServiceUri"];
+        if (string.IsNullOrEmpty(uri))
+        {
+            if (dev)
+            {
+                uri = "http://127.0.0.1:10002/devstoreaccount1";
+            }
+            else
+            {
+                throw new InvalidOperationException(
+                    "Tickets:ServiceUri is required outside Development.");
+            }
+        }
+        return new TableTicketService(new TableServiceClient(
+            new Uri(uri), new DefaultAzureCredential()));
     });
-    builder.Services.AddSingleton<ITicketService, TableTicketService>();
 }
 
 // Answers: configured OpenAI and Search endpoints select retrieval-augmented
