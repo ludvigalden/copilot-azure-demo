@@ -11,9 +11,10 @@ resource "azurerm_bot_service_azure_bot" "bot" {
   location            = "global"
   sku                 = "F0"
 
-  microsoft_app_type   = "UserAssignedMSI"
-  microsoft_app_id     = azurerm_user_assigned_identity.app.client_id
-  microsoft_app_msi_id = azurerm_user_assigned_identity.app.id
+  microsoft_app_type      = "UserAssignedMSI"
+  microsoft_app_id        = azurerm_user_assigned_identity.app.client_id
+  microsoft_app_msi_id    = azurerm_user_assigned_identity.app.id
+  microsoft_app_tenant_id = data.azurerm_client_config.current.tenant_id
 
   # Bot Framework posts channel messages here: the custom hostname when
   # bound, otherwise the container app's default domain.
