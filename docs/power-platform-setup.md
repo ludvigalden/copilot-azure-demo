@@ -33,14 +33,15 @@ internal names.
 
 4. **Import the solution.** Preferred: let CI do it —
    `power-platform.yml` packs the solution on every pull request, and
-   once the repository variable `POWER_PLATFORM_ENVIRONMENT_URL` (the
-   environment's URL, uncommitted by rule) exists, the import job
-   imports and publishes with the federated identity, no stored
-   secret. The job resolves the host the connector should call itself
-   — the container app's host name, or the public hostname once that
-   secret exists — and after importing it queries the environment for
-   the connector record and prints it in the job log. To import by
-   hand instead:
+   once `POWER_PLATFORM_ENVIRONMENT_URL` (the environment's URL,
+   uncommitted by rule) exists both as a repository variable and on
+   the deploy environment — the import job's gate can only see the
+   repository-level copy — the import job imports and publishes with
+   the federated identity, no stored secret. The job resolves the
+   host the connector should call itself — the container app's host
+   name, or the public hostname once that secret exists — and after
+   importing it queries the environment for the connector record and
+   prints it in the job log. To import by hand instead:
 
    ```sh
    pac solution pack --zipfile out/itsupport.zip \
