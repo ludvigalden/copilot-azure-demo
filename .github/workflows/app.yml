@@ -9,6 +9,7 @@ on:
       - "contracts/**"
       - "Dockerfile"
       - ".dockerignore"
+      - "Directory.Packages.props"
       - ".github/workflows/app.yml"
   pull_request:
     paths:
@@ -17,6 +18,7 @@ on:
       - "contracts/**"
       - "Dockerfile"
       - ".dockerignore"
+      - "Directory.Packages.props"
       - ".github/workflows/app.yml"
   workflow_dispatch:
 
