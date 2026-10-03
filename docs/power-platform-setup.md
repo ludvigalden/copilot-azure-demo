@@ -33,11 +33,14 @@ internal names.
 
 4. **Import the solution.** Preferred: let CI do it —
    `power-platform.yml` packs the solution on every pull request, and
-   once the repository variables `POWER_PLATFORM_ENVIRONMENT_URL`
-   (the environment's URL, uncommitted by rule) and
-   `IT_SUPPORT_API_HOST` (the container app's host name) exist, the
-   import job imports and publishes with the federated identity, no
-   stored secret. To import by hand instead:
+   once the repository variable `POWER_PLATFORM_ENVIRONMENT_URL` (the
+   environment's URL, uncommitted by rule) exists, the import job
+   imports and publishes with the federated identity, no stored
+   secret. The job resolves the host the connector should call itself
+   — the container app's host name, or the public hostname once that
+   secret exists — and after importing it queries the environment for
+   the connector record and prints it in the job log. To import by
+   hand instead:
 
    ```sh
    pac solution pack --zipfile out/itsupport.zip \
@@ -54,24 +57,53 @@ internal names.
    built to match.
 
 5. **Build the agent.** Follow `docs/copilot-studio-agent.md` in the
-   maker portal. Its knowledge step adds the AI Search knowledge
-   source (the Terraform-managed search service, index `kb`,
-   authenticated with **Entra ID Integrated**). If the knowledge
-   connection's test call fails with HTTP 403, the connection's
-   first-party service principal (an enterprise application the
-   connection created, listed under Enterprise applications) is
-   missing read rights on the index; grant it:
+   maker portal; this checklist gives the order and the failure modes.
 
-   ```sh
-   scope="/subscriptions/<subscription id>/resourceGroups/<resource group>"
-   scope="$scope/providers/Microsoft.Search/searchServices/<search service>"
-   az role assignment create \
-     --assignee "<object id of the connection's enterprise application>" \
-     --role "Search Index Data Reader" \
-     --scope "$scope"
-   ```
+   - **Knowledge.** Add the AI Search knowledge source (the
+     Terraform-managed search service, index `kb`, authenticated with
+     **Entra ID Integrated**). If the knowledge connection's test call
+     fails with HTTP 403, the connection's first-party service
+     principal (an enterprise application the connection created,
+     listed under Enterprise applications) is missing read rights on
+     the index; grant it:
 
-   Then re-run the connection test.
+     ```sh
+     scope="/subscriptions/<subscription id>/resourceGroups/<resource group>"
+     scope="$scope/providers/Microsoft.Search/searchServices/<search service>"
+     az role assignment create \
+       --assignee "<object id of the connection's enterprise application>" \
+       --role "Search Index Data Reader" \
+       --scope "$scope"
+     ```
+
+     Then re-run the connection test.
+
+   - **The connector.** The solution import registers `ItSupportApi`
+     as a custom connector in the environment. In the agent's
+     **Tools** pane, add a tool and pick it from the custom
+     connectors; if the agent was built before the import ran,
+     refresh the connector list first. Adding it asks for a
+     connection: sign in and consent. The consent screen names the
+     connector's dedicated application registration (the one the
+     infrastructure created for it) requesting access to the API on
+     the signed-in user's behalf; if consent is not offered, grant
+     admin consent for that application's API permissions in the
+     Azure portal and create the connection again.
+
+   - **The actions and the flow.** Enable the agent-level
+     `GetMyProfile` action from the connector, and build the
+     `Escalate to IT` topic and the `Create support ticket` agent
+     flow exactly as `docs/copilot-studio-agent.md` specifies; ticket
+     creation goes through the flow, which calls the connector's
+     `CreateTicket` operation. With generative orchestration on, a
+     turn can then choose between answering from the knowledge
+     source, running the escalation topic, and calling the profile
+     action.
+
+   - **Publish.** Once the agent answers in the test pane, publish it
+     to Microsoft Teams. This is the step the billing plan from step
+     2 licenses; without the plan the publish check fails while the
+     test pane keeps working.
 
 6. **Verify in the test pane.** Two conversations exercise the whole
    chain:
