@@ -57,6 +57,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
       - uses: microsoft/powerplatform-actions/actions-install@v1.9.2
 
       - name: Pack the unmanaged solution
@@ -66,9 +72,23 @@ jobs:
           solution-file: ${{ env.SOLUTION_FILE }}
           solution-type: Unmanaged
 
-      - name: Fill the deployment settings from repository variables
+      - name: Resolve the host the connector should call
         env:
-          IT_SUPPORT_API_HOST: ${{ vars.IT_SUPPORT_API_HOST }}
+          PUBLIC_HOSTNAME: ${{ secrets.PUBLIC_HOSTNAME }}
+          NAME_PREFIX: ${{ vars.NAME_PREFIX }}
+        run: |
+          if [ -n "$PUBLIC_HOSTNAME" ]; then
+            host="$PUBLIC_HOSTNAME"
+          else
+            host="$(az containerapp show \
+              --name "${NAME_PREFIX}-app" \
+              --resource-group "${NAME_PREFIX}-rg" \
+              --query properties.configuration.ingress.fqdn \
+              --output tsv)"
+          fi
+          echo "IT_SUPPORT_API_HOST=$host" >> "$GITHUB_ENV"
+
+      - name: Fill the deployment settings with the resolved host
         run: |
           jq --arg host "$IT_SUPPORT_API_HOST" \
             '.EnvironmentVariables |= map(if .SchemaName == "itsupport_ApiHost" then .Value = $host else . end)' \
@@ -85,3 +105,14 @@ jobs:
           use-deployment-settings-file: true
           deployment-settings-file: out/deployment-settings.json
           publish-changes: true
+
+      - name: Verify the connector registration in Dataverse
+        env:
+          ENVIRONMENT_URL: ${{ vars.POWER_PLATFORM_ENVIRONMENT_URL }}
+        run: |
+          token="$(az account get-access-token --resource "$ENVIRONMENT_URL" --query accessToken --output tsv)"
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer $token" \
+            --get --data-urlencode '$select=connectorid,name,createdon' \
+            "$ENVIRONMENT_URL/api/data/v9.2/connectors" \
+            | jq -r '.value[] | "connector \(.name) (\(.connectorid)) created \(.createdon)"'
