@@ -374,7 +374,7 @@
       "authorizationUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
       "tokenUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
       "scopes": {
-        "api://{clientId}/access_as_user": "Access the IT Support API on behalf of the signed-in user."
+        "api://copaz-api/access_as_user": "Access the IT Support API on behalf of the signed-in user."
       },
       "description": "Microsoft Entra ID (authorization code flow with PKCE)."
     }
@@ -382,7 +382,7 @@
   "security": [
     {
       "entra": [
-        "api://{clientId}/access_as_user"
+        "api://copaz-api/access_as_user"
       ]
     }
   ],
@@ -392,7 +392,7 @@
       "description": "IT support operations for the assistant, the portal and the agent."
     }
   ],
-  "host": "@environmentVariables(\"itsupport_ApiHost\")",
+  "host": "@environmentVariables('itsupport_ApiHost')",
   "schemes": [
     "https"
   ]
