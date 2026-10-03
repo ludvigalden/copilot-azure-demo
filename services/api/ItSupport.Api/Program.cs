@@ -2,9 +2,12 @@ using System.Text;
 using Azure.Data.Tables;
 using Azure.Identity;
 using ItSupport.Api.Answers;
+using ItSupport.Api.Bot;
 using ItSupport.Api.Identity;
 using ItSupport.Api.Tickets;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.Agents.Hosting.AspNetCore;
 using Microsoft.Extensions.Options;
 using Microsoft.Identity.Web;
 
@@ -17,6 +20,16 @@ builder.Services.AddAuthorization();
 // Identity: presence of AzureAd:ClientId selects Entra; otherwise stand-ins,
 // registered only in Development, so a deployed build without configuration
 // fails at startup rather than running unauthenticated.
+//
+// The bot app id is the container app's user-assigned managed identity client
+// id, published as AZURE_CLIENT_ID; the outbound service connection mirrors it
+// and no client secret exists anywhere in the bot path.
+var botAppId = cfg["AZURE_CLIENT_ID"];
+if (!string.IsNullOrEmpty(botAppId))
+{
+    cfg["Connections:ServiceConnection:Settings:ClientId"] = botAppId;
+}
+
 if (!string.IsNullOrEmpty(cfg["AzureAd:ClientId"]))
 {
     builder.Services
@@ -25,6 +38,27 @@ if (!string.IsNullOrEmpty(cfg["AzureAd:ClientId"]))
         .AddDownstreamApi("Graph", cfg.GetSection("Graph"))
         .AddInMemoryTokenCaches();
     builder.Services.AddScoped<IUserDirectory, GraphUserDirectory>();
+
+    // Bot inbound auth: Bot Protocol JWTs validated under a dedicated scheme
+    // so the SPA API's Entra scheme stays the default. The audience is the bot
+    // app id (TokenValidation:Audiences overrides); the tenant follows AzureAd.
+    var audiences = cfg.GetSection("TokenValidation:Audiences").Get<string[]>();
+    if (audiences is not { Length: > 0 })
+    {
+        if (string.IsNullOrEmpty(botAppId))
+        {
+            throw new InvalidOperationException(
+                "TokenValidation:Audiences or AZURE_CLIENT_ID is required for bot token validation.");
+        }
+
+        audiences = [botAppId];
+    }
+
+    builder.Services.AddBotAspNetAuthentication(new TokenValidationOptions
+    {
+        Audiences = audiences,
+        TenantId = cfg["TokenValidation:TenantId"] ?? cfg["AzureAd:TenantId"],
+    });
 }
 else if (dev)
 {
@@ -101,12 +135,45 @@ else
     throw new InvalidOperationException("No answer provider is configured.");
 }
 
+// Agent: the M365 Agents SDK hosting layer. AddAgentDefaults re-registers
+// HttpClient and Controllers idempotently; AddAgent registers the agent
+// (transient) with AgentApplicationOptions bound from the "AgentApplication"
+// config section. In Development the profile intent is live against
+// StubUserDirectory; in cloud the user token for on-behalf-of lookups arrives
+// with Teams SSO, so the intent answers gracefully until then.
+builder.AddAgentDefaults().AddAgent<ItSupportAgent>();
+builder.Services.AddSingleton(new BotProfileOptions(UserDirectoryAvailable: dev));
+
 var app = builder.Build();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+
+// The agent endpoint: Bot Protocol activity posts, mirroring the package's
+// MapAgentApplicationEndpoints body. Production requires the bot JWT scheme
+// on the group; Development accepts unsigned local activity posts, which is
+// how the headless dev loop drives every intent over plain HTTP.
+var botEndpoints = app.MapGroup("/api/bot");
+if (!dev)
+{
+    botEndpoints.RequireAuthorization(new AuthorizeAttribute
+    {
+        AuthenticationSchemes = BotAuthentication.SchemeName,
+    });
+}
+
+botEndpoints.MapPost("/messages", async (
+    HttpRequest request,
+    HttpResponse response,
+    IAgentHttpAdapter adapter,
+    ItSupportAgent agent,
+    CancellationToken cancellationToken) =>
+{
+    await adapter.ProcessAsync(request, response, agent, cancellationToken);
+});
+
 app.MapFallbackToFile("index.html");
 app.Run();
 

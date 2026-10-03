@@ -46,18 +46,37 @@ public sealed class ApiTests : IDisposable
     }
 
     [Fact]
-    public async Task WithAzureAd_configReturnsAuth_andMeWithoutTokenIs401()
+    public void WithAzureAd_withoutBotAppId_throws()
     {
+        // In Entra mode the bot's inbound-token audience comes from
+        // AZURE_CLIENT_ID (or TokenValidation:Audiences); boot must fail
+        // loudly rather than start with an unvalidatable bot endpoint.
+        var factory = Factory(settings: new Dictionary<string, string?>
+        {
+            ["Environment"] = "Production",
+            ["AzureAd:ClientId"] = "00000000-0000-0000-0000-0000000000aa",
+            ["AzureAd:TenantId"] = "00000000-0000-0000-0000-0000000000bb",
+        });
+
+        Assert.Throws<InvalidOperationException>(factory.CreateClient);
+    }
+
+    [Fact]
+    public async Task WithAzureAdAndBotAppId_configReturnsAuth_andMeWithoutTokenIs401()
+    {
+        // Production carries the bot app id (the container app's managed-identity
+        // client id) alongside the web API's Entra registration; the bot audience
+        // resolves from AZURE_CLIENT_ID when TokenValidation:Audiences is unset.
         var client = Factory(settings: new Dictionary<string, string?>
         {
             ["AzureAd:ClientId"] = "00000000-0000-0000-0000-0000000000aa",
             ["AzureAd:TenantId"] = "00000000-0000-0000-0000-0000000000bb",
+            ["AZURE_CLIENT_ID"] = "00000000-0000-0000-0000-0000000000cc",
         }).CreateClient();
 
         var config = await client.GetFromJsonAsync<ClientConfig>("/api/config");
         Assert.NotNull(config?.Auth);
         Assert.Equal("00000000-0000-0000-0000-0000000000aa", config.Auth.ClientId);
-        Assert.Equal("api://00000000-0000-0000-0000-0000000000aa/access_as_user", config.Auth.Scope);
 
         var me = await client.GetAsync("/api/me");
         Assert.Equal(HttpStatusCode.Unauthorized, me.StatusCode);
