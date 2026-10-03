@@ -44,8 +44,11 @@ jobs:
 
   import:
     needs: pack
-    # Skips (green) until the environment variable is created as a
-    # repository variable; packing alone still proves the layout.
+    # Skips (green) while the environment is not configured. The gate is
+    # read at job-if evaluation, which sees repository variables but not
+    # environment-scoped ones; POWER_PLATFORM_ENVIRONMENT_URL therefore
+    # exists both as a repository variable (this gate) and as a demo
+    # environment variable (the value the steps below read).
     if: >-
       github.event_name != 'pull_request' &&
       vars.POWER_PLATFORM_ENVIRONMENT_URL != ''
