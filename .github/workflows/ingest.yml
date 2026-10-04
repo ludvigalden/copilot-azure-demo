@@ -21,6 +21,15 @@ permissions:
   contents: read
   id-token: write
 
+# Overlapping runs race the same indexes and the shared embedding
+# deployment: one run's stale-document sweep can delete what another run
+# just uploaded. Runs serialize instead of cancelling, because a
+# mid-run cancellation can leave an index half converged, and every
+# queued run re-derives the whole knowledge base anyway.
+concurrency:
+  group: ingest
+  cancel-in-progress: false
+
 jobs:
   validate:
     runs-on: ubuntu-latest
