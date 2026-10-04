@@ -3,7 +3,7 @@
 The web app is not the only way to talk to the assistant. The same API
 service also hosts a conversational agent: a bot that answers the same
 questions from the same knowledge base and opens tickets in the same
-store — over any Bot Framework channel. The web SPA posts to `/api/*`;
+store, over any Bot Framework channel. The web SPA posts to `/api/*`;
 the agent receives Bot Protocol activities at `/api/bot/messages`. One
 service, one retrieval pipeline, one ticket store, two doors in.
 
@@ -33,9 +33,9 @@ so every branch is unit-testable and reads top to bottom in
   claims, so nothing derived from them is stored until Teams single
   sign-on supplies a verified user token.
 - **Look up a profile.** Directory lookup needs a verified user
-  token, which only Teams single sign-on can supply; the sender a
-  channel asserts is not one. Until that sign-on flow is wired, the
-  intent says so and points at the web app instead.
+  token, and a verified delegated sign-on flow is not wired for the
+  bot; the sender a channel asserts is not one. Until such a flow is
+  wired, the intent says so and points at the web app instead.
 
 Around the three intents sit the small system behaviors: a greeting
 when the bot joins a conversation, an explicit reset, a fallback that

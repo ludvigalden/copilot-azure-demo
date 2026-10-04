@@ -18,15 +18,20 @@ async function bootstrap() {
     if (needsAuth(data)) {
       // MSAL lives in a separate chunk, fetched only when the API reports a configured sign-in.
       const { authGate, initializeAuth } = await import("./auth")
-      const msal = await initializeAuth(data.auth)
-      // Sign-in stays optional: a signed-out session renders as a guest and
-      // carries a sign-in action. loginRedirect navigates the whole page, so
-      // the signed-in state at render time is accurate without reactive hooks.
-      const signIn =
-        msal.getAllAccounts().length > 0
-          ? undefined
-          : () => msal.loginRedirect({ scopes: [data.auth.scope] })
-      app = authGate(msal, <App signIn={signIn} />)
+      const { msal, actions } = await initializeAuth(data.auth)
+      // Sign-in stays optional: no account renders as a guest with a sign-in
+      // action. Redirects navigate the page, so render-time state is accurate;
+      // a failed silent renewal blocks the request, offering re-auth, guest
+      // or sign-out.
+      app = authGate(
+        msal,
+        <App
+          signedIn={msal.getAllAccounts().length > 0}
+          signIn={actions.signIn}
+          signOut={actions.signOut}
+          continueAsGuest={actions.continueAsGuest}
+        />,
+      )
     }
   } catch {
     // /config unreachable or sign-in setup failed: render without sign-in.

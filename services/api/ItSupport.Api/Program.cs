@@ -190,9 +190,13 @@ builder.Services.AddRateLimiter(limiter =>
 // X-Forwarded-For entry, the one the ingress appended to whatever the client
 // sent, so a client-supplied leftmost entry is never honored and cannot
 // choose the address the rate limiter partitions on. The forwarded address
-// feeds only rate-limit bucketing; the ingress-append trust is verified
-// against the live deployment after rollout, and per-IP attribution is not
-// claimed beyond that evidence.
+// feeds only rate-limit bucketing. The step this trusts, the ingress
+// appending the caller's address to X-Forwarded-For, is documented Container
+// Apps ingress behavior (Microsoft Learn) rather than a measured property of
+// this deployment: no live multi-IP evidence has been collected. One residual
+// gap: an in-environment peer with direct reach to the container port is
+// treated as the trusted ingress by this same configuration. Per-IP
+// attribution is claimed no further than that.
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
