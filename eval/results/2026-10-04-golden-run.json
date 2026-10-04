@@ -1,0 +1,421 @@
+{
+  "run": {
+    "produced_at": "2026-10-04T19:50:31+00:00",
+    "producer": "eval/produce.py",
+    "answer_endpoint": "https://copaz-staging-app.calmplant-5ad96f60.swedencentral.azurecontainerapps.io/api/answers",
+    "answer_revision": "copaz-staging-app--0000006",
+    "answer_image": "ghcr.io/ludvigalden/copilot-azure-demo:8bdbb10f10edde0dcca735107d7aafbd3d12d280",
+    "retrieval": "the production retrieval path inside the deployed app: hybrid full-text plus server-vectorized text query with semantic ranking over the knowledge-base index (three chunks per answer)",
+    "dataset": {
+      "path": "/root/Code/ludvigalden/copilot-azure-demo/eval/golden.jsonl",
+      "sha256": "db900a323887b8f9e4ba4ade69ad069c9adce036ffb90bc0058055cd15205373",
+      "questions": 15
+    },
+    "judge": {
+      "endpoint_host": "copaz-ai.cognitiveservices.azure.com",
+      "deployment": "chat-staging",
+      "model": "gpt-4.1-mini-2025-04-14",
+      "api_version": "2024-10-21",
+      "prompt": "You are judging one answer from a retrieval-augmented IT-support assistant.\n\nQUESTION:\n{question}\n\nGROUND TRUTH (written by the knowledge-base author):\n{ground_truth}\n\nRETRIEVED CONTEXT (the chunks the system retrieved for this question):\n{context}\n\nANSWER UNDER TEST:\n{answer}\n\nScore strictly on integers:\n- groundedness 1-5: is every claim in the answer supported by the retrieved context? 5 means every claim is supported by the context, 1 means the answer contradicts or ignores it.\n- relevance 1-5: does the answer correctly and completely answer the question, judged against the ground truth? 5 means correct and complete, 1 means wrong or unhelpful.\n\nA citation being present proves transport only, not quality; judge the answer text itself.\n\nReply with only one JSON object, no prose, no code fences:\n{{\"groundedness\": <int>, \"relevance\": <int>, \"groundedness_rationale\": \"<=30 words\", \"relevance_rationale\": \"<=30 words\"}}",
+      "max_output_tokens": 300,
+      "temperature": 0
+    },
+    "thresholds": {
+      "min_groundedness": 4.0,
+      "min_mean_relevance": 4.0,
+      "hit_at_k": 3
+    },
+    "usage": {
+      "answer_calls": 15,
+      "answer_attempts": 15,
+      "judge_calls": 15,
+      "judge_attempts": 46,
+      "judge_prompt_tokens": 7939,
+      "judge_completion_tokens": 991,
+      "answer_path_tokens": "not exposed by the answers endpoint"
+    },
+    "cost": {
+      "status": "cost not computed: no verified per-token price is cited",
+      "currency": "",
+      "input_per_1m_tokens": null,
+      "output_per_1m_tokens": null,
+      "basis": "",
+      "estimate": null
+    }
+  },
+  "results": [
+    {
+      "query": "How do I reset a forgotten password?",
+      "expected_article": "reset-password.md",
+      "answer_text": "To reset a forgotten password, go to the self-service password reset page and enter your work email address. Then choose a verification method, usually a code sent to your registered mobile phone, enter the code, and set a new password that is at least 14 characters and different from your last five passwords. You can do this from any device with a browser, no need to be on the company network. After, sign in again on every device where you used the old password.",
+      "citations": [
+        [
+          "Reset your password",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/reset-password.md"
+        ]
+      ],
+      "answer_error": null,
+      "groundedness": 5.0,
+      "relevance": 5.0,
+      "groundedness_rationale": "All steps and details match the retrieved context exactly, including verification method, password length, and device sign-in.",
+      "relevance_rationale": "Answer fully addresses the question per ground truth, covering reset steps, verification, password requirements, and device sign-in.",
+      "retrieval_filenames": [
+        "reset-password.md"
+      ],
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "judgment_error": null
+    },
+    {
+      "query": "I did not receive the password reset code, what now?",
+      "expected_article": "reset-password.md",
+      "answer_text": "If you did not receive the password reset code, first check that your phone number is registered in your security info. If the problem persists and your account becomes locked after too many attempts, wait 30 minutes and try again. If the lock does not lift on its own, contact the service desk and include the exact error message in your ticket.",
+      "citations": [
+        [
+          "Reset your password",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/reset-password.md"
+        ]
+      ],
+      "answer_error": null,
+      "groundedness": 5.0,
+      "relevance": 5.0,
+      "groundedness_rationale": "All claims about checking phone number, waiting 30 minutes if locked, and contacting service desk are supported by retrieved context.",
+      "relevance_rationale": "Answer fully addresses the question as per ground truth, covering all key steps and advice.",
+      "retrieval_filenames": [
+        "reset-password.md"
+      ],
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "judgment_error": null
+    },
+    {
+      "query": "How long must a new password be?",
+      "expected_article": "reset-password.md",
+      "answer_text": "A new password must be at least 14 characters long. It also must not match any of your last five passwords.",
+      "citations": [
+        [
+          "Reset your password",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/reset-password.md"
+        ]
+      ],
+      "answer_error": null,
+      "groundedness": 5.0,
+      "relevance": 5.0,
+      "groundedness_rationale": "All claims about password length and history match the retrieved context exactly.",
+      "relevance_rationale": "Answer fully addresses the question with complete and accurate information per the ground truth.",
+      "retrieval_filenames": [
+        "reset-password.md"
+      ],
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "judgment_error": null
+    },
+    {
+      "query": "How do I set up multi-factor authentication?",
+      "expected_article": "mfa-setup.md",
+      "answer_text": "To set up multi-factor authentication (MFA), first install an authenticator app on your mobile phone. Then, sign in to the security info page with your work account, choose \"Add sign-in method,\" and select \"Authenticator app.\" Scan the QR code with the app, approve the test notification, and keep the app installed for future sign-ins. Also, register at least one backup method like a phone number to receive SMS codes in case you lose access to the app.",
+      "citations": [
+        [
+          "Set up multi-factor authentication",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/mfa-setup.md"
+        ]
+      ],
+      "answer_error": null,
+      "groundedness": 5.0,
+      "relevance": 5.0,
+      "groundedness_rationale": "All steps and recommendations match the retrieved context exactly.",
+      "relevance_rationale": "Answer fully covers the ground truth steps and adds backup method advice, matching the question's needs.",
+      "retrieval_filenames": [
+        "mfa-setup.md"
+      ],
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "judgment_error": null
+    },
+    {
+      "query": "What happens if I lose my phone with the authenticator?",
+      "expected_article": "mfa-setup.md",
+      "answer_text": "If you lose your phone with the authenticator, you should add a new device as soon as possible because an account with no reachable MFA method can only be recovered by the service desk, and this process takes at least one business day. It is important to have at least one backup method registered, such as a phone number that can receive SMS codes, to avoid being locked out.",
+      "citations": [
+        [
+          "Set up multi-factor authentication",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/mfa-setup.md"
+        ],
+        [
+          "Reset your password",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/reset-password.md"
+        ]
+      ],
+      "answer_error": null,
+      "groundedness": 5.0,
+      "relevance": 5.0,
+      "groundedness_rationale": "All claims about adding a new device, backup methods, and service desk recovery are supported by the retrieved context.",
+      "relevance_rationale": "The answer fully addresses the question and matches the ground truth in content and completeness.",
+      "retrieval_filenames": [
+        "mfa-setup.md",
+        "reset-password.md"
+      ],
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "judgment_error": null
+    },
+    {
+      "query": "Do I need a backup sign-in method?",
+      "expected_article": "mfa-setup.md",
+      "answer_text": "Yes, you need to register at least one backup sign-in method, such as a phone number that can receive SMS codes. This is important because if you change or lose your phone, having a backup method allows you to recover your account without needing to contact the service desk, which takes at least one business day. (Source 1)",
+      "citations": [
+        [
+          "Set up multi-factor authentication",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/mfa-setup.md"
+        ],
+        [
+          "Order a new laptop",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/new-laptop.md"
+        ]
+      ],
+      "answer_error": null,
+      "groundedness": 5.0,
+      "relevance": 5.0,
+      "groundedness_rationale": "All claims about backup methods and recovery process are directly supported by the retrieved context.",
+      "relevance_rationale": "Answer fully addresses the need for backup sign-in methods as per the ground truth.",
+      "retrieval_filenames": [
+        "mfa-setup.md",
+        "new-laptop.md"
+      ],
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "judgment_error": null
+    },
+    {
+      "query": "How do I connect to the VPN?",
+      "expected_article": "vpn.md",
+      "answer_text": "To connect to the VPN, open the VPN client from the system tray or menu bar, select the *Company* profile, and click *Connect*. Then, approve the multi-factor authentication notification on your phone. The VPN icon will turn green when the connection is established, allowing access to internal systems by their normal addresses. If you encounter issues, try quitting and restarting the client to refresh the certificate or disconnect and reconnect if nothing loads.",
+      "citations": [
+        [
+          "Connect to the VPN",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/vpn.md"
+        ]
+      ],
+      "answer_error": null,
+      "groundedness": 5.0,
+      "relevance": 5.0,
+      "groundedness_rationale": "All steps and troubleshooting advice match the retrieved context exactly.",
+      "relevance_rationale": "Answer fully covers the connection process as per ground truth, including multi-factor approval and icon status.",
+      "retrieval_filenames": [
+        "vpn.md"
+      ],
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "judgment_error": null
+    },
+    {
+      "query": "Do I need the VPN for email?",
+      "expected_article": "vpn.md",
+      "answer_text": "According to Source 1, the VPN is only needed for internal systems that are not published to the internet, such as file shares and legacy business applications. Email works without the VPN. Therefore, you do not need the VPN for email.",
+      "citations": [
+        [
+          "Connect to the VPN",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/vpn.md"
+        ],
+        [
+          "Set up multi-factor authentication",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/mfa-setup.md"
+        ],
+        [
+          "Reset your password",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/reset-password.md"
+        ]
+      ],
+      "answer_error": null,
+      "groundedness": 5.0,
+      "relevance": 5.0,
+      "groundedness_rationale": "All claims match the retrieved context exactly, including VPN use and email access.",
+      "relevance_rationale": "Answer directly and completely addresses the question as per the ground truth.",
+      "retrieval_filenames": [
+        "vpn.md",
+        "mfa-setup.md",
+        "reset-password.md"
+      ],
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "judgment_error": null
+    },
+    {
+      "query": "The VPN says the certificate has expired, what do I do?",
+      "expected_article": "vpn.md",
+      "answer_text": "If the VPN client says the certificate has expired, quit the client completely and start it again; it will download a fresh certificate on launch.",
+      "citations": [
+        [
+          "Connect to the VPN",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/vpn.md"
+        ],
+        [
+          "Reset your password",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/reset-password.md"
+        ]
+      ],
+      "answer_error": null,
+      "groundedness": 5.0,
+      "relevance": 5.0,
+      "groundedness_rationale": "The answer exactly matches the retrieved context's instructions for expired certificates.",
+      "relevance_rationale": "The answer fully addresses the question as per the ground truth, providing the correct and complete solution.",
+      "retrieval_filenames": [
+        "vpn.md",
+        "reset-password.md"
+      ],
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "judgment_error": null
+    },
+    {
+      "query": "How do I add an office printer?",
+      "expected_article": "printer.md",
+      "answer_text": "To add an office printer, open the printer settings on your computer and choose \"Add printer.\" Select the printer named after the room it is in, for example, \"PRT-3F12\" on floor 3, choosing the one closest to your desk. The driver installs automatically, and you can print a test page from the printer's properties to confirm it works.",
+      "citations": [
+        [
+          "Add or fix a printer",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/printer.md"
+        ]
+      ],
+      "answer_error": null,
+      "groundedness": 5.0,
+      "relevance": 5.0,
+      "groundedness_rationale": "All steps and details match the retrieved context exactly, including naming, driver installation, and test page printing.",
+      "relevance_rationale": "The answer fully addresses the question as per the ground truth, covering all necessary steps clearly and completely.",
+      "retrieval_filenames": [
+        "printer.md"
+      ],
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "judgment_error": null
+    },
+    {
+      "query": "My print jobs are stuck in the queue, how do I fix it?",
+      "expected_article": "printer.md",
+      "answer_text": "If your print jobs stay queued even though the printer shows *Ready*, first try removing the printer from your settings and adding it again, then resend the job. After reinstalling, cancel any old queued jobs from the queue window, as they survive reinstallation. Also, check the printer for any errors or jams and clear them if needed.",
+      "citations": [
+        [
+          "Add or fix a printer",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/printer.md"
+        ]
+      ],
+      "answer_error": null,
+      "groundedness": 5.0,
+      "relevance": 5.0,
+      "groundedness_rationale": "All steps match the retrieved context exactly, including checking printer readiness, removing and adding printer, resending jobs, and canceling old queued jobs.",
+      "relevance_rationale": "The answer fully addresses the question as per the ground truth, providing a complete and correct solution to stuck print jobs.",
+      "retrieval_filenames": [
+        "printer.md"
+      ],
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "judgment_error": null
+    },
+    {
+      "query": "Can I print a visitor badge at the office printer?",
+      "expected_article": "printer.md",
+      "answer_text": "No, visitor badges cannot be printed at the office printers managed by IT. For badge or visitor labels, you need to contact the receptionist on duty at the reception desks, as those printers are managed by facilities and do not accept support tickets.",
+      "citations": [
+        [
+          "Add or fix a printer",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/printer.md"
+        ]
+      ],
+      "answer_error": null,
+      "groundedness": 5.0,
+      "relevance": 5.0,
+      "groundedness_rationale": "All claims about printer management and contacting reception are directly supported by the retrieved context.",
+      "relevance_rationale": "The answer fully addresses the question and aligns with the ground truth about badge printing restrictions.",
+      "retrieval_filenames": [
+        "printer.md"
+      ],
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "judgment_error": null
+    },
+    {
+      "query": "How do I order a new laptop?",
+      "expected_article": "new-laptop.md",
+      "answer_text": "To order a new laptop, open the IT service portal and select Hardware, then New laptop. Choose one of the three standard models, which differ in screen size and weight but run the same software image. Your manager must approve the order, and the laptop will arrive within five business days with setup instructions included.",
+      "citations": [
+        [
+          "Order a new laptop",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/new-laptop.md"
+        ]
+      ],
+      "answer_error": null,
+      "groundedness": 5.0,
+      "relevance": 5.0,
+      "groundedness_rationale": "All steps and details match the retrieved context exactly.",
+      "relevance_rationale": "Answer fully covers the ordering process as per the ground truth without missing steps.",
+      "retrieval_filenames": [
+        "new-laptop.md"
+      ],
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "judgment_error": null
+    },
+    {
+      "query": "When am I entitled to a laptop replacement?",
+      "expected_article": "new-laptop.md",
+      "answer_text": "You are entitled to a laptop replacement every four years, or earlier if your current hardware no longer runs the standard software image. If your laptop is due for replacement within three months, you should order the new one now to ensure it arrives before the old one fails.",
+      "citations": [
+        [
+          "Order a new laptop",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/new-laptop.md"
+        ],
+        [
+          "Set up multi-factor authentication",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/mfa-setup.md"
+        ]
+      ],
+      "answer_error": null,
+      "groundedness": 5.0,
+      "relevance": 5.0,
+      "groundedness_rationale": "All claims match the retrieved context exactly, including timing and conditions for replacement.",
+      "relevance_rationale": "Answer fully addresses the entitlement timing and ordering window as per the ground truth.",
+      "retrieval_filenames": [
+        "new-laptop.md",
+        "mfa-setup.md"
+      ],
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "judgment_error": null
+    },
+    {
+      "query": "What happens to my files when I get a new laptop?",
+      "expected_article": "new-laptop.md",
+      "answer_text": "When you get a new laptop and sign in with your work account, your files in OneDrive, your browser profile, and your email appear automatically. Applications install themselves from the company portal over the next hour, ensuring your environment is set up smoothly from the start.",
+      "citations": [
+        [
+          "Order a new laptop",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/new-laptop.md"
+        ],
+        [
+          "Set up multi-factor authentication",
+          "https://github.com/ludvigalden/copilot-azure-demo/blob/main/kb/mfa-setup.md"
+        ]
+      ],
+      "answer_error": null,
+      "groundedness": 5.0,
+      "relevance": 4.0,
+      "groundedness_rationale": "All claims about files, browser profile, email, and app installation are directly supported by the retrieved context.",
+      "relevance_rationale": "Answer covers main points but omits keeping old laptop and handing it in, which is in ground truth.",
+      "retrieval_filenames": [
+        "new-laptop.md",
+        "mfa-setup.md"
+      ],
+      "retrieval_hit": true,
+      "retrieval_rank": 1,
+      "judgment_error": null
+    }
+  ],
+  "gate": {
+    "passed": true,
+    "failures": [],
+    "mean_groundedness": 5.0,
+    "mean_relevance": 4.933,
+    "retrieval_hits": 15,
+    "judged": 15
+  }
+}
