@@ -3,10 +3,13 @@
 #
 # Produces apps/teams/dist/itsupport-teams.zip (manifest at the archive
 # root, icons alongside) after checking the manifest's JSON shape, the
-# icon dimensions Teams requires (color 192x192, outline 32x32), and —
-# when the official schema is reachable — the manifest against the
-# published JSON schema itself. The zip is a disposable build artifact:
-# the .gitignore keeps dist/ out of the repository.
+# icon dimensions Teams requires (color 192x192, outline 32x32), and
+# the manifest against the published JSON schema itself. The schema
+# fetch and validation are mandatory: an unreachable schema, a missing
+# python jsonschema module, or a manifest that fails the schema ends
+# the build nonzero, and the build directory carries no package from a
+# failed run. The zip is a disposable build artifact: the .gitignore
+# keeps dist/ out of the repository.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -56,32 +59,42 @@ if len(bot_ids) != 1 or not bot_ids[0]:
 print("manifest structure: ok (icons %dx%d / %dx%d, 1 bot)" % (color + outline))
 PY
 
-if curl --fail --silent --max-time 20 "$schema_url" -o "$out/schema.json" 2>/dev/null; then
-  if python3 - "$src/manifest.json" "$out/schema.json" <<'PY'
+# The build directory must exist before the schema lands in it, and the
+# package from any earlier build must go before validation: a failed
+# run leaves no deliverable behind that could be mistaken for one this
+# run validated.
+mkdir -p "$out"
+rm -f "$pkg"
+
+schema_rc=0
+curl --fail --silent --show-error --max-time 20 "$schema_url" \
+    -o "$out/schema.json" || schema_rc=$?
+if [ "$schema_rc" -ne 0 ]; then
+    echo "manifest schema: the official schema is unreachable (curl exit $schema_rc): $schema_url" >&2
+    exit 1
+fi
+
+if python3 - "$src/manifest.json" "$out/schema.json" <<'PY'
 import json
 import sys
+
 try:
     import jsonschema
 except ImportError:
     sys.exit(2)
 jsonschema.validate(json.load(open(sys.argv[1])), json.load(open(sys.argv[2])))
 PY
-  then echo "manifest schema: validated against the official v1.16 schema"
-  else
+then echo "manifest schema: validated against the official v1.16 schema"
+else
     rc=$?
     if [ "$rc" -eq 2 ]; then
-      echo "manifest schema: python jsonschema module missing, structural check only"
+        echo "manifest schema: the python jsonschema module is missing, cannot validate" >&2
     else
-      echo "manifest schema: VALIDATION FAILED against the official schema" >&2
-      exit 1
+        echo "manifest schema: VALIDATION FAILED against the official schema" >&2
     fi
-  fi
-else
-  echo "manifest schema: official schema unreachable, structural check only"
+    exit 1
 fi
 
-mkdir -p "$out"
-rm -f "$pkg"
 (cd "$src" && zip -q -r -X "$pkg" manifest.json icons)
 unzip -l "$pkg"
 echo "package built: $pkg"
