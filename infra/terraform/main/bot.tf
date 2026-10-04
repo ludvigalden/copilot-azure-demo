@@ -35,3 +35,16 @@ resource "azurerm_bot_channel_directline" "directline" {
     v3_allowed = true
   }
 }
+
+# The Microsoft Teams channel lets Bot Framework deliver Teams client
+# traffic to the same messaging endpoint as every other channel. The
+# channel is tenant-level (Teams is one tenant-wide service, not
+# per-environment), so only the owner apply declares it; the Teams app
+# package that makes the agent installable lives in apps/teams/.
+resource "azurerm_bot_channel_ms_teams" "teams" {
+  count = local.owns_shared ? 1 : 0
+
+  bot_name            = azurerm_bot_service_azure_bot.bot.name
+  resource_group_name = data.azurerm_resource_group.app.name
+  location            = azurerm_bot_service_azure_bot.bot.location
+}
