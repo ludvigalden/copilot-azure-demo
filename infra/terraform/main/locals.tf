@@ -76,9 +76,9 @@ locals {
   # because Terraform cannot reference the client ID a resource generates.
   # The API publishes the matching scope string to the SPA through
   # /api/config, where Terraform supplies it as a setting. The shared
-  # application's name wins when one exists; the owning prefix fills in
-  # otherwise (coalesce skips the null of the absent data source).
-  app_id_uri = "api://${coalesce(one(data.azuread_application.shared_api[*].display_name), var.prefix)}-api"
+  # application's own name carries the suffix, so the coalesce takes its
+  # display name whole and the owning prefix composes it.
+  app_id_uri = "api://${coalesce(one(data.azuread_application.shared_api[*].display_name), "${var.prefix}-api")}"
 
   # The ingress FQDN of an external container app is its name under the
   # environment's default domain. Composing it here instead of reading the
