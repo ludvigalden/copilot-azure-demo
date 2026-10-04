@@ -191,8 +191,10 @@ development section above covers the zero-Azure setup.
 - [ADR 0002](docs/adr/0002-contract-first-http-api.md) — the contract-first generation chain and the drift gate.
 - [ADR 0003](docs/adr/0003-configuration-selects-implementation.md) — how configuration selects real implementations or stand-ins.
 - [ADR 0004](docs/adr/0004-infrastructure-and-delivery.md) — the infrastructure and delivery decisions.
-- [ADR 0005](docs/adr/0005-agent-in-code.md) — why the conversational agent is ordinary code, with the Power Platform agent banked.
-- [The conversational agent](docs/agent.md) — the bot, its intents, its channels, and the headless proof.
+- [ADR 0005](docs/adr/0005-agent-in-code.md) — why the conversational agent
+  is ordinary code, with the Power Platform agent banked.
+- [The conversational agent](docs/agent.md) — the bot, its intents, its
+  channels, and the headless proof.
 - [Local workflow runs](docs/local-loop.md) — running the
   deployment workflows on the workstation against staging before a
   push.

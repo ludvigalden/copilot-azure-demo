@@ -10,8 +10,8 @@ pipeline, one ticket store, two doors in.
 
 This page describes the agent as it exists today. The earlier Power
 Platform agent design is the banked secondary path:
-[docs/copilot-studio-agent.md](docs/copilot-studio-agent.md) records
-its design and [docs/power-platform-setup.md](docs/power-platform-setup.md)
+[copilot-studio-agent.md](copilot-studio-agent.md) records
+its design and [power-platform-setup.md](power-platform-setup.md)
 its setup checklist.
 
 ## What the agent can do

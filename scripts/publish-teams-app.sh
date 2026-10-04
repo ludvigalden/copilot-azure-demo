@@ -35,9 +35,10 @@ echo "signed in as: $(az account show --query user.name -o tsv)"
 
 client_id="$(grep -E '^ARM_CLIENT_ID=' .env.local | cut -d= -f2- | tr -d '\r')"
 client_secret="$(grep -E '^ARM_CLIENT_SECRET=' .env.local | cut -d= -f2- | tr -d '\r')"
-[ -n "$client_id" ] && [ -n "$client_secret" ] || {
-  echo ".env.local must carry ARM_CLIENT_ID and ARM_CLIENT_SECRET" >&2; exit 1;
-}
+if [ -z "$client_id" ] || [ -z "$client_secret" ]; then
+  echo ".env.local must carry ARM_CLIENT_ID and ARM_CLIENT_SECRET" >&2
+  exit 1
+fi
 
 ./scripts/build-teams-package.sh >/dev/null
 pkg="apps/teams/dist/itsupport-teams.zip"

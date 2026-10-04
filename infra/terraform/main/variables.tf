@@ -3,12 +3,6 @@ variable "prefix" {
   type        = string
 }
 
-variable "location" {
-  description = "Azure region for every resource."
-  type        = string
-  default     = "swedencentral"
-}
-
 variable "search_sku" {
   description = "Azure AI Search tier. Free holds one service per subscription with a 50 MB cap; Basic is the paid fallback."
   type        = string
