@@ -1,4 +1,5 @@
 using System.Text;
+using System.Threading.RateLimiting;
 using Azure.Data.Tables;
 using Azure.Identity;
 using ItSupport.Api.Answers;
@@ -7,6 +8,8 @@ using ItSupport.Api.Identity;
 using ItSupport.Api.Tickets;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Agents.Hosting.AspNetCore;
 using Microsoft.Extensions.Options;
 using Microsoft.Identity.Web;
@@ -37,6 +40,7 @@ if (!string.IsNullOrEmpty(cfg["AzureAd:ClientId"]))
         .EnableTokenAcquisitionToCallDownstreamApi()
         .AddDownstreamApi("Graph", cfg.GetSection("Graph"))
         .AddInMemoryTokenCaches();
+
     builder.Services.AddScoped<IUserDirectory, GraphUserDirectory>();
 
     // Bot inbound auth: Bot Protocol JWTs validated under a dedicated scheme
@@ -147,6 +151,55 @@ else
     throw new InvalidOperationException("No answer provider is configured.");
 }
 
+// Answers and tickets are guest-open, so both are rate limited per client
+// IP: one fixed window per address, twenty requests per minute by default,
+// HTTP 429 beyond it. The window is configurable so tests can shrink it;
+// the controller's actions opt in under the named policy.
+builder.Services.AddRateLimiter(limiter =>
+{
+    limiter.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    var permitLimit = 20;
+    if (int.TryParse(cfg["RateLimit:PermitLimit"], out var permits))
+    {
+        permitLimit = permits;
+    }
+
+    var windowSeconds = 60.0;
+    if (double.TryParse(cfg["RateLimit:WindowSeconds"], out var seconds))
+    {
+        windowSeconds = seconds;
+    }
+
+    limiter.AddPolicy(
+        ItSupport.Api.ItSupportController.RateLimitPolicy,
+        httpContext => RateLimitPartition.GetFixedWindowLimiter(
+            httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = permitLimit,
+                Window = TimeSpan.FromSeconds(windowSeconds),
+            }));
+});
+
+// The Container Apps ingress terminates TLS and proxies every request, so
+// the app's socket peer is always the ingress and never a caller; there is
+// no pinnable ingress address, so the known-proxy lists stay empty — the
+// documented Container Apps pattern — and the connection peer counts as the
+// trusted proxy. ForwardLimit bounds processing to the single rightmost
+// X-Forwarded-For entry, the one the ingress appended to whatever the client
+// sent, so a client-supplied leftmost entry is never honored and cannot
+// choose the address the rate limiter partitions on. The forwarded address
+// feeds only rate-limit bucketing; the ingress-append trust is verified
+// against the live deployment after rollout, and per-IP attribution is not
+// claimed beyond that evidence.
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.ForwardLimit = 1;
+    options.KnownIPNetworks.Clear();
+    options.KnownProxies.Clear();
+});
+
 // Agent: the M365 Agents SDK hosting layer. AddAgentDefaults re-registers
 // HttpClient and Controllers idempotently; AddAgent registers the agent
 // (transient) with AgentApplicationOptions bound from the "AgentApplication"
@@ -157,10 +210,12 @@ builder.AddAgentDefaults().AddAgent<ItSupportAgent>();
 builder.Services.AddSingleton(new BotProfileOptions(UserDirectoryAvailable: dev));
 
 var app = builder.Build();
+app.UseForwardedHeaders();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 app.MapControllers();
 
 // The agent endpoint: Bot Protocol activity posts, mirroring the package's

@@ -33,7 +33,7 @@ export interface paths {
         };
         /**
          * Get my profile
-         * @description Returns the signed-in caller's profile, read from the directory on behalf of the caller, including the manager when one is recorded.
+         * @description Returns the caller's profile. Sign-in is optional: a signed-in caller's profile is read from the directory on the caller's behalf, including the manager when one is recorded, and an anonymous caller receives the guest profile.
          */
         get: operations["GetMyProfile"];
         put?: never;
@@ -55,7 +55,7 @@ export interface paths {
         put?: never;
         /**
          * Answer a question
-         * @description Answers a question against the knowledge base and returns the answer text with citations, plus the retrieved chunk texts, which evaluation consumes.
+         * @description Answers a question against the knowledge base and returns the answer text with citations, plus the retrieved chunk texts, which evaluation consumes. Anonymous callers are answered as guests. Requests are rate limited per client address; beyond the limit the endpoint answers 429.
          */
         post: operations["AnswerQuestion"];
         delete?: never;
@@ -75,7 +75,7 @@ export interface paths {
         put?: never;
         /**
          * Create support ticket
-         * @description Creates an IT ticket for the signed-in caller and returns it with its number. The caller is taken from the access token, never from the request body.
+         * @description Creates an IT ticket and returns it with its number. The caller is taken from the access token when one is presented and recorded as a guest otherwise — never from the request body. Requests are rate limited per client address; beyond the limit the endpoint answers 429.
          */
         post: operations["CreateTicket"];
         delete?: never;
@@ -214,7 +214,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The caller's profile. */
+            /** @description The caller's profile, or the guest profile when anonymous. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -230,7 +230,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No valid access token was presented. */
+            /** @description Presented credentials failed authentication. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -268,8 +268,15 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No valid access token was presented. */
+            /** @description Presented credentials failed authentication. */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Too many requests from this client address. */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -306,8 +313,15 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description No valid access token was presented. */
+            /** @description Presented credentials failed authentication. */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Too many requests from this client address. */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -1,5 +1,5 @@
-import { InteractionType, PublicClientApplication } from "@azure/msal-browser"
-import { MsalAuthenticationTemplate, MsalProvider } from "@azure/msal-react"
+import { PublicClientApplication } from "@azure/msal-browser"
+import { MsalProvider } from "@azure/msal-react"
 import type { ReactNode } from "react"
 import { type AuthConfig, api } from "./api/client"
 
@@ -22,11 +22,16 @@ export async function initializeAuth(auth: AuthConfig) {
     async onRequest({ request }) {
       const account = msal.getAllAccounts()[0]
       if (account) {
-        const { accessToken } = await msal.acquireTokenSilent({
-          scopes: [auth.scope],
-          account,
-        })
-        request.headers.set("Authorization", `Bearer ${accessToken}`)
+        try {
+          const { accessToken } = await msal.acquireTokenSilent({
+            scopes: [auth.scope],
+            account,
+          })
+          request.headers.set("Authorization", `Bearer ${accessToken}`)
+        } catch {
+          // Token acquisition failed (e.g. expired session): send the request
+          // without a token rather than breaking the guest-open endpoints.
+        }
       }
       return request
     },
@@ -35,13 +40,10 @@ export async function initializeAuth(auth: AuthConfig) {
   return msal
 }
 
-/** Wraps the app in the MSAL provider and forces redirect sign-in. */
+/**
+ * Wraps the app in the MSAL provider. Sign-in is optional: the app renders
+ * for anonymous callers, who are served as guests by the API.
+ */
 export function authGate(msal: PublicClientApplication, children: ReactNode) {
-  return (
-    <MsalProvider instance={msal}>
-      <MsalAuthenticationTemplate interactionType={InteractionType.Redirect}>
-        {children}
-      </MsalAuthenticationTemplate>
-    </MsalProvider>
-  )
+  return <MsalProvider instance={msal}>{children}</MsalProvider>
 }

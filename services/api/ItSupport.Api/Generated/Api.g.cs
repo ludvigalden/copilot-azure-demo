@@ -44,9 +44,9 @@ namespace ItSupport.Api
         /// Get my profile
         /// </summary>
         /// <remarks>
-        /// Returns the signed-in caller's profile, read from the directory on behalf of the caller, including the manager when one is recorded.
+        /// Returns the caller's profile. Sign-in is optional: a signed-in caller's profile is read from the directory on the caller's behalf, including the manager when one is recorded, and an anonymous caller receives the guest profile.
         /// </remarks>
-        /// <returns>The caller's profile.</returns>
+        /// <returns>The caller's profile, or the guest profile when anonymous.</returns>
         [Microsoft.AspNetCore.Mvc.HttpGet, Microsoft.AspNetCore.Mvc.Route("me")]
         public abstract System.Threading.Tasks.Task<Microsoft.AspNetCore.Mvc.ActionResult<UserProfile>> GetMyProfile(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken));
 
@@ -54,7 +54,7 @@ namespace ItSupport.Api
         /// Answer a question
         /// </summary>
         /// <remarks>
-        /// Answers a question against the knowledge base and returns the answer text with citations, plus the retrieved chunk texts, which evaluation consumes.
+        /// Answers a question against the knowledge base and returns the answer text with citations, plus the retrieved chunk texts, which evaluation consumes. Anonymous callers are answered as guests. Requests are rate limited per client address; beyond the limit the endpoint answers 429.
         /// </remarks>
         /// <returns>The answer with citations and retrieved chunks.</returns>
         [Microsoft.AspNetCore.Mvc.HttpPost, Microsoft.AspNetCore.Mvc.Route("answers")]
@@ -64,7 +64,7 @@ namespace ItSupport.Api
         /// Create support ticket
         /// </summary>
         /// <remarks>
-        /// Creates an IT ticket for the signed-in caller and returns it with its number. The caller is taken from the access token, never from the request body.
+        /// Creates an IT ticket and returns it with its number. The caller is taken from the access token when one is presented and recorded as a guest otherwise — never from the request body. Requests are rate limited per client address; beyond the limit the endpoint answers 429.
         /// </remarks>
         /// <returns>The ticket was created.</returns>
         [Microsoft.AspNetCore.Mvc.HttpPost, Microsoft.AspNetCore.Mvc.Route("tickets")]

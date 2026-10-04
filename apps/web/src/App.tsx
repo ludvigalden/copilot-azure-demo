@@ -44,7 +44,7 @@ const useStyles = makeStyles({
   },
 })
 
-export function App() {
+export function App({ signIn }: { signIn?: () => void }) {
   const styles = useStyles()
   const [profile, setProfile] = useState<UserProfile | null>(null)
   const [question, setQuestion] = useState("")
@@ -54,6 +54,7 @@ export function App() {
   const [escalating, setEscalating] = useState(false)
 
   useEffect(() => {
+    // Sign-in is optional: the API answers this anonymous with the guest profile.
     api.GET("/me").then(({ data }) => setProfile(data ?? null))
   }, [])
 
@@ -86,7 +87,14 @@ export function App() {
     <div className={styles.root}>
       <div className={styles.header}>
         <Title2>IT Support Assistant</Title2>
-        {profile && <Text weight="semibold">{profile.displayName}</Text>}
+        <div className={styles.actions}>
+          {profile && <Text weight="semibold">{profile.displayName}</Text>}
+          {signIn && (
+            <Button appearance="secondary" onClick={signIn}>
+              Sign in
+            </Button>
+          )}
+        </div>
       </div>
       <Textarea
         value={question}

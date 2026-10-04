@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace ItSupport.Api;
 
@@ -12,6 +13,20 @@ public sealed class ItSupportController(
     Answers.IAnswerProvider answers,
     IConfiguration configuration) : ItSupportControllerBase
 {
+    /// <summary>The rate-limiting policy applied to the guest-open endpoints.</summary>
+    public const string RateLimitPolicy = "client-ip";
+
+    // Sign-in is optional, but credentials that were presented and failed
+    // authentication must fail loudly: no Authorization header means a guest,
+    // a valid token the caller's identity, and any header that failed to
+    // authenticate — a malformed, empty, whitespace, or non-bearer credential
+    // — a 401 challenge rather than a silent downgrade to guest.
+    private bool PresentedCredentialsAreInvalid()
+    {
+        return Request.Headers.Authorization.Count > 0
+            && User.Identity?.IsAuthenticated != true;
+    }
+
     [AllowAnonymous]
     public override Task<ActionResult<ClientConfig>> GetConfig(CancellationToken cancellationToken = default)
     {
@@ -44,21 +59,51 @@ public sealed class ItSupportController(
         return Task.FromResult<ActionResult<ClientConfig>>(Ok(config));
     }
 
+    // Sign-in is optional: a signed-in caller gets their directory profile
+    // read on their behalf, an anonymous caller the guest profile.
+    [AllowAnonymous]
     public override async Task<ActionResult<UserProfile>> GetMyProfile(CancellationToken cancellationToken = default)
     {
-        return Ok(await directory.GetProfileAsync(User, cancellationToken));
+        if (PresentedCredentialsAreInvalid())
+        {
+            return Challenge();
+        }
+
+        return User.Identity?.IsAuthenticated == true
+            ? Ok(await directory.GetProfileAsync(User, cancellationToken))
+            : Ok(Identity.Guest.Profile);
     }
 
+    // Guest-open: a signed-in caller is answered as themselves, an anonymous
+    // caller as a guest, and either way the endpoint answers.
+    [AllowAnonymous]
+    [EnableRateLimiting(RateLimitPolicy)]
     public override async Task<ActionResult<Answer>> AnswerQuestion(
         [FromBody] AnswerRequest body, CancellationToken cancellationToken = default)
     {
+        if (PresentedCredentialsAreInvalid())
+        {
+            return Challenge();
+        }
+
         return Ok(await answers.AnswerAsync(body.Question, cancellationToken));
     }
 
+    // Guest-open: the caller is the signed-in identity when a valid token is
+    // presented and a guest otherwise — never a value from the request body.
+    [AllowAnonymous]
+    [EnableRateLimiting(RateLimitPolicy)]
     public override async Task<ActionResult<Ticket>> CreateTicket(
         [FromBody] CreateTicketRequest body, CancellationToken cancellationToken = default)
     {
-        var caller = CallerFromClaims();
+        if (PresentedCredentialsAreInvalid())
+        {
+            return Challenge();
+        }
+
+        var caller = User.Identity?.IsAuthenticated == true
+            ? CallerFromClaims()
+            : Identity.Guest.Person;
         var ticket = await tickets.CreateAsync(caller, body.ShortDescription, body.Description, cancellationToken);
         return StatusCode(StatusCodes.Status201Created, ticket);
     }
