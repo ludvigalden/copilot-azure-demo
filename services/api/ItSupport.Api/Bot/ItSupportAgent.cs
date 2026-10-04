@@ -190,24 +190,17 @@ public sealed class ItSupportAgent : AgentApplication
     }
 
     /// <summary>
-    /// Resolves the ticket caller from the activity sender. Until Teams SSO
-    /// lands, the caller identity rests on the Teams-asserted sender; the
-    /// email field carries the sender's email when the channel supplies one
-    /// and otherwise the asserted object id under the reserved .invalid
-    /// domain, which can never be mistaken for a real address.
+    /// Resolves the ticket caller from the activity sender. The
+    /// channel-asserted sender fields (from.name, from.properties) are
+    /// client-controllable in Direct Line and are not verified Entra
+    /// claims, so nothing derived from the activity is recorded as the
+    /// caller: bot-created tickets record the same guest person the
+    /// unauthenticated REST endpoints use, until Teams single sign-on
+    /// supplies a verified user token.
     /// </summary>
     public static Person CallerFromActivity(IActivity activity)
     {
-        var from = activity.From;
-        var displayName = FirstNonEmpty(from?.Name, from?.AadObjectId, from?.Id) ?? "Unknown caller";
-        var senderId = FirstNonEmpty(from?.AadObjectId, from?.Id) ?? "unknown";
-        var email = from?.Properties is { Count: > 0 } properties
-            && properties.TryGetValue("email", out var emailElement)
-            && emailElement.ValueKind == System.Text.Json.JsonValueKind.String
-            && emailElement.GetString() is { Length: > 0 } emailValue
-                ? emailValue
-                : $"{senderId}@caller.invalid";
-        return new Person { DisplayName = displayName, Email = email };
+        return Guest.Person;
     }
 
     private static ClaimsPrincipal CallerPrincipal(IActivity activity)
@@ -220,10 +213,5 @@ public sealed class ItSupportAgent : AgentApplication
         };
         var identity = new ClaimsIdentity(claims, authenticationType: "Bot");
         return new ClaimsPrincipal(identity);
-    }
-
-    private static string? FirstNonEmpty(params string?[] values)
-    {
-        return values.FirstOrDefault(value => !string.IsNullOrEmpty(value));
     }
 }

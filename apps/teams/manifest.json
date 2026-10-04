@@ -15,8 +15,8 @@
     "full": "IT Support Assistant"
   },
   "description": {
-    "short": "IT support agent: cited knowledge answers, ticket creation, profile lookup.",
-    "full": "The IT Support Assistant answers workplace IT questions with cited knowledge-base answers, creates tickets that come back as an Adaptive Card with a ticket number, and looks up your directory profile. It is the Azure-native agent from the copilot-azure-demo repository: the conversation logic lives in code, the bot is registered and channel-wired by Terraform, and every deployment goes through CI."
+    "short": "IT support agent: cited knowledge answers and ticket creation.",
+    "full": "The IT Support Assistant answers workplace IT questions with cited knowledge-base answers and creates tickets that come back as an Adaptive Card with a ticket number. It is the Azure-native agent from the copilot-azure-demo repository: the conversation logic lives in code, the bot is registered and channel-wired by Terraform, and every deployment goes through CI."
   },
   "icons": {
     "color": "icons/color.png",

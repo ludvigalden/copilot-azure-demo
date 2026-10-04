@@ -151,10 +151,11 @@ else
     throw new InvalidOperationException("No answer provider is configured.");
 }
 
-// Answers and tickets are guest-open, so both are rate limited per client
-// IP: one fixed window per address, twenty requests per minute by default,
-// HTTP 429 beyond it. The window is configurable so tests can shrink it;
-// the controller's actions opt in under the named policy.
+// Answers, tickets, and the profile endpoint are guest-open, so all are
+// rate limited per client IP: one fixed window per address, twenty requests
+// per minute by default, HTTP 429 beyond it. The window is configurable so
+// tests can shrink it; the controller's actions opt in under the named
+// policy.
 builder.Services.AddRateLimiter(limiter =>
 {
     limiter.RejectionStatusCode = StatusCodes.Status429TooManyRequests;

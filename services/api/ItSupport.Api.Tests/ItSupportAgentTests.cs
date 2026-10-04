@@ -43,8 +43,8 @@ public sealed class ItSupportAgentTests
         var reply = await SendAsync(agent, "escalate: my laptop won't boot");
 
         Assert.Equal("my laptop won't boot", store.ShortDescription);
-        Assert.Equal("User1", store.Caller.DisplayName);
-        Assert.Equal("user1@caller.invalid", store.Caller.Email);
+        Assert.Equal(Guest.Name, store.Caller.DisplayName);
+        Assert.Equal(Guest.Email, store.Caller.Email);
 
         Assert.NotNull(reply.Attachments);
         var attachment = Assert.Single(reply.Attachments!);
@@ -52,7 +52,7 @@ public sealed class ItSupportAgentTests
         var card = Assert.IsType<JsonObject>(attachment.Content);
         Assert.Equal("IT ticket created", (string?)card["body"]![0]!["text"]);
         Assert.Equal(store.Created.Number, (string?)card["body"]![2]!["facts"]![0]!["value"]);
-        Assert.Equal("User1", (string?)card["body"]![2]!["facts"]![1]!["value"]);
+        Assert.Equal(Guest.Name, (string?)card["body"]![2]!["facts"]![1]!["value"]);
     }
 
     [Fact]
@@ -146,22 +146,24 @@ public sealed class ItSupportAgentTests
     }
 
     [Fact]
-    public void CallerFromActivity_readsEmailProperty()
+    public void CallerFromActivity_ignoresForgedChannelIdentity()
     {
         var activity = new Activity
         {
-            From = new ChannelAccount(id: "aad-123", name: "Dev Caller"),
+            From = new ChannelAccount(id: "aad-123", name: "Forged Caller"),
         };
-        activity.From.Properties["email"] = JsonSerializer.SerializeToElement("dev.user@example.com");
+        activity.From.Properties["email"] = JsonSerializer.SerializeToElement("ceo@example.com");
 
         var caller = ItSupportAgent.CallerFromActivity(activity);
 
-        Assert.Equal("Dev Caller", caller.DisplayName);
-        Assert.Equal("dev.user@example.com", caller.Email);
+        Assert.Equal(Guest.Name, caller.DisplayName);
+        Assert.Equal(Guest.Email, caller.Email);
+        Assert.NotEqual("ceo@example.com", caller.Email);
+        Assert.NotEqual("Forged Caller", caller.DisplayName);
     }
 
     [Fact]
-    public void CallerFromActivity_fallsBackToReservedInvalidAddress()
+    public void CallerFromActivity_recordsGuestWithoutChannelIdentity()
     {
         var activity = new Activity
         {
@@ -170,8 +172,8 @@ public sealed class ItSupportAgentTests
 
         var caller = ItSupportAgent.CallerFromActivity(activity);
 
-        Assert.Equal("Other Caller", caller.DisplayName);
-        Assert.Equal("aad-456@caller.invalid", caller.Email);
+        Assert.Equal(Guest.Name, caller.DisplayName);
+        Assert.Equal(Guest.Email, caller.Email);
     }
 
     private static ItSupportAgent BuildAgent(

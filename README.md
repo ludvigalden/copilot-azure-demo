@@ -5,14 +5,15 @@ Copyright (c) 2026 Ludvig Aldén. All rights reserved; see [LICENSE](LICENSE).
 A working demo of an IT-support assistant built on ASP.NET Core,
 React and Microsoft Entra ID. Ask it a question and it answers from a
 small knowledge base of Markdown articles, citing the source
-articles. It can look up your profile and manager in Microsoft
-Graph, and it can escalate a conversation into a support ticket — in a
-built-in Table Storage store, or in ServiceNow when ServiceNow
-credentials are configured. The web app is one of two doors in: the
-same API also hosts a conversational agent that any Bot Framework
-channel can reach — Direct Line for headless clients, with the
-Microsoft Teams channel live and the installable app package ready to
-publish once the tenant carries Teams
+articles. Signed in on the web, it can look up your profile and
+manager in Microsoft Graph, and it can escalate a conversation into a
+support ticket — in a built-in Table Storage store, or in ServiceNow
+when ServiceNow credentials are configured. The web app is one of two
+doors in: the same API also hosts a conversational agent that any Bot
+Framework channel can reach — Direct Line for headless clients, with
+the Microsoft Teams channel live and the installable app package ready
+to publish once the tenant carries Teams. Bot callers are recorded as
+guests until single sign-on verifies them
 ([docs/agent.md](docs/agent.md)).
 
 The deployed demo runs at <https://copilot-azure.demo.ludvigalden.com>.

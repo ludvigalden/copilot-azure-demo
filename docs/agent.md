@@ -2,11 +2,10 @@
 
 The web app is not the only way to talk to the assistant. The same API
 service also hosts a conversational agent: a bot that answers the same
-questions from the same knowledge base, opens tickets in the same
-store, and reaches the same user directory — over any Bot Framework
-channel. The web SPA posts to `/api/*`; the agent receives Bot
-Protocol activities at `/api/bot/messages`. One service, one retrieval
-pipeline, one ticket store, two doors in.
+questions from the same knowledge base and opens tickets in the same
+store — over any Bot Framework channel. The web SPA posts to `/api/*`;
+the agent receives Bot Protocol activities at `/api/bot/messages`. One
+service, one retrieval pipeline, one ticket store, two doors in.
 
 This page describes the agent as it exists today. The earlier Power
 Platform agent design is the banked secondary path:
@@ -28,13 +27,15 @@ so every branch is unit-testable and reads top to bottom in
   creates a ticket through the normal ticket service — Table Storage
   by default, ServiceNow when credentials are configured — and
   replies with an Adaptive Card carrying the `IT-<date>-<suffix>`
-  number the caller references afterwards.
-- **Look up a profile.** "My profile" returns the caller's display
-  name, email, department and manager from the user directory. In the
-  cloud the caller's identity arrives with the channel message, and
-  directory reads ride single sign-on; until that sign-on flow is
-  wired, the intent says so and points at the web app instead of
-  guessing at an identity.
+  number the caller references afterwards. The ticket records the
+  guest caller: the sender fields a channel asserts (name, email,
+  object id) are client-controllable and are not verified Entra
+  claims, so nothing derived from them is stored until Teams single
+  sign-on supplies a verified user token.
+- **Look up a profile.** Directory lookup needs a verified user
+  token, which only Teams single sign-on can supply; the sender a
+  channel asserts is not one. Until that sign-on flow is wired, the
+  intent says so and points at the web app instead.
 
 Around the three intents sit the small system behaviors: a greeting
 when the bot joins a conversation, an explicit reset, a fallback that
@@ -53,6 +54,28 @@ the same identity the API already uses outbound, and no client secret
 exists anywhere. Terraform owns the registration and its channels; see
 ADR 0005 for the decision and ADR 0004 for the infrastructure around
 it.
+
+## Hardening posture
+
+Two deliberate postures in the request path, stated as they stand:
+
+- **AllowedCallers is unset.** Verified against the pinned
+  Microsoft.Agents 1.8.77 sample: an unset caller list accepts any
+  caller for tokens that are not Bot Framework protocol tokens, and
+  such a token must still carry an audience of the bot's client ID
+  (a GUID, enforced at startup). How a caller would acquire such a
+  token depends on the scopes the bot's app registration exposes and
+  is not verified live. Populating the caller list is optional
+  hardening and a user decision; the `*` wildcard is never set, and
+  the Azure Bot Service-only mode is wrong for this architecture.
+- **Forwarded headers trust one hop.** `ForwardLimit` is 1 and the
+  known-proxy lists are cleared, so the app consumes only the
+  rightmost `X-Forwarded-For` entry, the one the Container Apps
+  ingress appends, and a client-supplied entry cannot choose the
+  address the rate limiter partitions on. The residual: an
+  in-environment peer with direct reach to the container port would
+  be trusted as the ingress. No live multi-IP proof of this posture
+  exists.
 
 ## Channels
 
