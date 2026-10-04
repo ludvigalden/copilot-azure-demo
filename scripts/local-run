@@ -12,19 +12,19 @@ set -eu
 cd "$(git rev-parse --show-toplevel)"
 
 case "${1:-}" in
-  infra | app | ingest | ci | power-platform)
-    workflow=".github/workflows/$1.yml"
-    shift
-    ;;
-  *)
-    echo "usage: $0 <infra|app|ingest|ci|power-platform> [extra options]" >&2
-    exit 64
-    ;;
+    infra | app | ingest | ci | power-platform)
+        workflow=".github/workflows/$1.yml"
+        shift
+        ;;
+    *)
+        echo "usage: $0 <infra|app|ingest|ci|power-platform> [extra options]" >&2
+        exit 64
+        ;;
 esac
 
 [ -f .env.local ] || {
-  echo ".env.local is missing; see docs/local-loop.md for the setup." >&2
-  exit 69
+    echo ".env.local is missing; see docs/local-loop.md for the setup." >&2
+    exit 69
 }
 
 # The staging jobs read their variables from the environment, which the
@@ -36,10 +36,10 @@ event=""
 [ -f event.json ] && event="-e event.json"
 
 exec act \
-  -W "$workflow" \
-  --secret-file .env.local \
-  $vars \
-  $event \
-  -P ubuntu-latest=catthehacker/ubuntu:act-latest \
-  --container-daemon-socket /var/run/docker.sock \
-  "$@"
+    -W "$workflow" \
+    --secret-file .env.local \
+    $vars \
+    $event \
+    -P ubuntu-latest=catthehacker/ubuntu:act-latest \
+    --container-daemon-socket /var/run/docker.sock \
+    "$@"

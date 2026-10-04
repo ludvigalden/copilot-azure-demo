@@ -137,7 +137,10 @@ The runner is a faithful but not complete Actions host. What differs:
   the staging variables arrive through the `.vars` file instead.
 - Matrix builds and Docker build contexts resolve with known quirks;
   the entry point mounts the Docker socket so image builds use the
-  host daemon directly.
+  host daemon directly. The repository identity comes from the git
+  remote, so a run from a scratch clone of the repository first points
+  its origin back at the real repository, or the image name composes
+  from the clone's path.
 - Anything Actions-specific — the registry token, the cache service,
   OpenID Connect — is absent by design, and the guards keep steps
   that need it from running.

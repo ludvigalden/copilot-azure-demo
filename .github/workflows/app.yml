@@ -85,6 +85,8 @@ jobs:
           ACT_ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
           ACT_ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
         run: |
+          # The local runner's image carries no Azure CLI; CI's runner has it.
+          command -v az >/dev/null 2>&1 || curl -sL https://aka.ms/InstallAzureCLIDeb | bash > /dev/null
           az login --service-principal \
             --username "$ACT_ARM_CLIENT_ID" \
             --password "$ACT_ARM_CLIENT_SECRET" \
