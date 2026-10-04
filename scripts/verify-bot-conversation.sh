@@ -73,8 +73,19 @@ def request(method, path, body=None):
             "Content-Type": "application/json",
         },
     )
-    with urllib.request.urlopen(req, timeout=60) as response:
-        return json.load(response)
+    # The container app scales to zero; the first delivery after an idle
+    # period can outlive the Bot Framework connector's patience and come
+    # back 502/503 while the app cold-starts. Retry those with backoff.
+    for attempt in range(8):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            if error.code in (502, 503, 504) and attempt < 7:
+                time.sleep(5 * (attempt + 1))
+                continue
+            raise
+    raise RuntimeError("unreachable")
 
 
 def say(conversation_id, text):
