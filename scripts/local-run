@@ -41,6 +41,13 @@ if [ -f event.json ]; then
     set -- "$@" -e event.json
 fi
 
-exec act "$@" \
+# The loop's exit status is the runner's. It is captured explicitly and
+# repeated as the last output line, so a piped or captured log — which
+# loses the exit status to the pipe's last command — still ends with the
+# verdict, and a run that failed can never look green from its output.
+rc=0
+act "$@" \
     -P ubuntu-latest=catthehacker/ubuntu:act-latest \
-    --container-daemon-socket /var/run/docker.sock
+    --container-daemon-socket /var/run/docker.sock || rc=$?
+echo "local-run: act exited with status $rc"
+exit "$rc"

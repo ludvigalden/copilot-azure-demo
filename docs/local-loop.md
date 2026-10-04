@@ -121,6 +121,16 @@ scripts/local-run power-platform  # pack the solution, skip the import
 Extra options after the workflow name are passed through to the
 runner (`-j` to select a job, `-v` to mount a volume, and so on).
 
+A failed run cannot report success: the entry point exits with the
+runner's own failure status and repeats that status as the run's last
+output line, so a piped or captured log still ends with the verdict.
+The deliberate-failure test proves both directions end to end with
+synthetic workflows — nothing reaches Azure, nothing is fetched:
+
+```sh
+sh scripts/tests/test-local-run.sh
+```
+
 ## What the guards allow
 
 Every mutating step that would leave the staging scope — or touch
