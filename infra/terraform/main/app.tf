@@ -65,11 +65,6 @@ resource "azurerm_container_app" "app" {
         name  = "AzureAd__ClientId"
         value = local.api_application_client_id
       }
-      # Tokens name this URI as their audience, so the API must accept it.
-      env {
-        name  = "AzureAd__Audience"
-        value = local.app_id_uri
-      }
       # The application ID URI is a stable name, so the scope string the SPA
       # requests is published here instead of being derived from the ID.
       env {
