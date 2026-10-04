@@ -73,8 +73,11 @@ def main() -> None:
         sys.stdout.write("\n")
         return
 
-    if not args.prefix:
-        parser.error("a resource name prefix is required: --prefix or NAME_PREFIX")
+    if not args.prefix and not (args.search_endpoint and args.openai_endpoint):
+        parser.error(
+            "a resource name prefix is required: --prefix or NAME_PREFIX"
+            " (or pass both endpoint overrides)"
+        )
 
     summary = push(
         chunks,
