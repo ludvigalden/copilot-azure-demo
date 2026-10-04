@@ -128,6 +128,12 @@ jobs:
     if: ${{ !github.event.act }}
     runs-on: ubuntu-latest
     environment: demo
+    # The custom domain is production-only, so the hostname is job-scoped
+    # here rather than in the workflow env block above, which both jobs
+    # read. Staging never sees the variable: both domain resources stay at
+    # count zero there, and its "No changes" plan proves the split held.
+    env:
+      TF_VAR_public_hostname: ${{ secrets.PUBLIC_HOSTNAME || '' }}
     concurrency:
       group: infra-demo-${{ github.ref }}
       cancel-in-progress: false
