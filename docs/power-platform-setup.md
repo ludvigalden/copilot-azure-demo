@@ -1,5 +1,11 @@
 # Power Platform setup checklist
 
+> **Secondary path.** The primary agent runs in code and needs none
+> of this setup — see [docs/agent.md](agent.md). This checklist covers
+> the banked Power Platform deployment path only: the solution under
+> `apps/power-platform/` still packs, imports and publishes through
+> its pipeline, and this is its setup record.
+
 One-time setup of the Power Platform side, done signed in as **the
 account that created the environment** (the environment-creating
 account; no other account has verified rights inside it). Public

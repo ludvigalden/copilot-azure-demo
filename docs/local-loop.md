@@ -32,7 +32,9 @@ plus three narrow grants the pipelines need to read and write their
 own footprint: `Reader` on the main resource group (the shared
 services are read there), `Search Service Contributor` on the search
 service (the Terraform-owned index definitions are read there), and
-`Storage Blob Data Contributor` on the staging state blob —
+`Storage Blob Data Contributor` on the state container — at container
+scope, because Terraform lists the blobs in it to find its workspaces,
+and a blob-scoped grant cannot list:
 
 ```sh
 rg_id="$(az group show -n <prefix>-rg --query id -o tsv)"
@@ -44,8 +46,7 @@ az role assignment create --assignee <sp-app-id> --role "Reader" --scope "$rg_id
 az role assignment create --assignee <sp-app-id> \
   --role "Search Service Contributor" --scope "$srch_id"
 az role assignment create --assignee <sp-app-id> \
-  --role "Storage Blob Data Contributor" \
-  --scope "$state_id/blobs/main-staging.tfstate"
+  --role "Storage Blob Data Contributor" --scope "$state_id"
 ```
 
 The principal's two remaining grants are managed by the staging apply
@@ -102,9 +103,10 @@ and are un-committable by construction (the deny-by-default
   ```
 
 - `.actrc` (optional) — standing flags the runner picks up
-  automatically, for example a larger default image when a workflow
-  needs more of the Actions environment than the small default one
-  carries.
+  automatically. The entry point pins the runner image itself
+  (`catthehacker/ubuntu:act-latest` on the command line), so a
+  `.actrc` platform override will not take effect; other standing
+  flags still do.
 
 ## Running a workflow
 

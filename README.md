@@ -8,7 +8,14 @@ small knowledge base of Markdown articles, citing the source
 articles. It can look up your profile and manager in Microsoft
 Graph, and it can escalate a conversation into a support ticket — in a
 built-in Table Storage store, or in ServiceNow when ServiceNow
-credentials are configured.
+credentials are configured. The web app is one of two doors in: the
+same API also hosts a conversational agent that any Bot Framework
+channel can reach — Direct Line for headless clients, with the
+Microsoft Teams channel live and the installable app package ready to
+publish once the tenant carries Teams
+([docs/agent.md](docs/agent.md)).
+
+The deployed demo runs at <https://copilot-azure.demo.ludvigalden.com>.
 
 The repository is deliberately small and readable end to end. Every
 technology it uses does a real job:
@@ -24,6 +31,7 @@ technology it uses does a real job:
 | Path | Contents |
 |---|---|
 | `apps/web/` | The React SPA. |
+| `apps/teams/` | The Teams app package source: manifest and icons, built and published by scripts in `scripts/`. |
 | `apps/power-platform/` | The unmanaged solution source: the custom connector payload (generated from the OpenAPI document), the environment variable definition, and the empty deployment settings the pipeline fills. |
 | `services/api/` | The ASP.NET Core API and its tests. |
 | `services/ingest/` | The Python ingester (uv project): chunks `kb/` into passages with citation URLs and prints them as JSON (`--dry-run`). |
@@ -38,6 +46,7 @@ technology it uses does a real job:
 | `.github/workflows/app.yml` | Builds the container image into the GitHub Container Registry and updates the container app. |
 | `.github/workflows/infra.yml` | Plans the Terraform `main/` root on pull requests and applies it on pushes to `main`. |
 | `.github/workflows/ingest.yml` | Runs the knowledge-base ingester on a weekly schedule and on changes. |
+| `scripts/` | Small operational entry points: the local workflow runner, the headless bot conversation proof, the Teams package build and publish. |
 | `docs/adr/` | Architecture decision records. |
 
 ## Contract-first API
@@ -116,7 +125,9 @@ pipeline depends on. `main/` owns every application resource: Azure
 OpenAI with a chat and an embedding model deployment, Azure AI
 Search on the free tier holding the Terraform-managed knowledge-base
 index, Table Storage for tickets, one Azure Container App that
-scales to zero, and the Azure Bot registration that points Bot
+scales to zero and serves production from its own hostname over a
+free managed certificate the same root issues and binds, and the
+Azure Bot registration that points Bot
 Framework channels at the app's `/api/bot/messages` endpoint. The
 bot's Microsoft App identity is the application's user-assigned
 managed identity — the bot's app ID is that identity's client ID —
@@ -180,10 +191,14 @@ development section above covers the zero-Azure setup.
 - [ADR 0002](docs/adr/0002-contract-first-http-api.md) — the contract-first generation chain and the drift gate.
 - [ADR 0003](docs/adr/0003-configuration-selects-implementation.md) — how configuration selects real implementations or stand-ins.
 - [ADR 0004](docs/adr/0004-infrastructure-and-delivery.md) — the infrastructure and delivery decisions.
+- [ADR 0005](docs/adr/0005-agent-in-code.md) — why the conversational agent is ordinary code, with the Power Platform agent banked.
+- [The conversational agent](docs/agent.md) — the bot, its intents, its channels, and the headless proof.
 - [Local workflow runs](docs/local-loop.md) — running the
   deployment workflows on the workstation against staging before a
   push.
 - [Copilot Studio agent design](docs/copilot-studio-agent.md) — the
-  agent, its escalation topic and its agent flow.
+  banked Power Platform agent's design: its escalation topic and its
+  agent flow.
 - [Power Platform setup checklist](docs/power-platform-setup.md) —
-  the one-time environment setup and verification.
+  the one-time environment setup and verification for the banked
+  path.

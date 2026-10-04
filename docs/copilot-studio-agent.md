@@ -1,8 +1,14 @@
 # Copilot Studio agent design
 
+> **Secondary path.** The repository's primary agent is the one in
+> code — see [docs/agent.md](agent.md) and
+> [ADR 0005](adr/0005-agent-in-code.md). This document records the
+> design of the earlier Power Platform agent, kept as the banked
+> alternative for a maker-authored agent.
+
 This document is the full design of the Copilot Studio agent and its
 agent flow, at the level of exact build steps. The agent does not
-exist as a live resource yet, and nothing in the repository claims
+exist as a live resource, and nothing in the repository claims
 authorship of one: the committed solution under
 `apps/power-platform/solution/` carries only the custom connector and
 the environment variable definition, because `pac solution pack` —

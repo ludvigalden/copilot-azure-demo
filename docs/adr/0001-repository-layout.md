@@ -20,6 +20,7 @@ The top level is divided by role:
 | Path | Contents | Why here |
 |---|---|---|
 | `apps/web/` | The React SPA | A person interacts with it directly. |
+| `apps/teams/` | The Teams app package source: the manifest and icons for the installable app | A person installs it in a Teams client; the package is built and published by scripts, never by hand. |
 | `apps/power-platform/` | The custom connector definition, generated from the OpenAPI document | Imported into Power Platform, where a maker builds on it. |
 | `services/api/` | The ASP.NET Core API | A server-side unit: other programs (the SPA, a client of the custom connector) talk to it over the network. |
 | `services/ingest/` | The Python ingester | A server-side unit: a batch job that chunks `kb/`; nothing calls it over the network. |
@@ -34,6 +35,7 @@ The top level is divided by role:
 | `.github/workflows/app.yml` | The image build and the container app update | Delivery is triggered by a merge, not by hand; the workflow is the only writer of the image. |
 | `.github/workflows/infra.yml` | Terraform plan and apply of the main root | Infrastructure changes are reviewed as plans before they reach Azure. |
 | `.github/workflows/ingest.yml` | The scheduled knowledge-base ingestion | The corpus and its processing cadence are repository content, not manual steps. |
+| `scripts/` | Small operational entry points: the local workflow runner, the headless bot conversation proof, the Teams package build and publish, the retirement scripts for the banked artifacts | One command per recurring operation; each script is the documented way to do that operation, so no step lives only in someone's shell history. |
 | `docs/adr/` | Architecture decision records | Numbered and dated, one file per decision. |
 
 `apps/` versus `services/` follows a single question: does a person
