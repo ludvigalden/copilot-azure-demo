@@ -98,9 +98,7 @@ def embed_all(
     for number, batch in enumerate(plan_batches(texts)):
         if number:
             sleep(EMBEDDING_PAUSE_SECONDS)
-        response = embeddings_client.embeddings.create(
-            model=model, input=batch
-        )
+        response = embeddings_client.embeddings.create(model=model, input=batch)
         embeddings.extend(
             item.embedding
             for item in sorted(response.data, key=lambda item: item.index)
@@ -138,7 +136,11 @@ def existing_ids(search_client) -> set[str]:
 
 
 def push_kb(
-    chunks: Sequence[Chunk], search_client, embeddings_client, *, embedding_deployment: str = EMBEDDING_DEPLOYMENT
+    chunks: Sequence[Chunk],
+    search_client,
+    embeddings_client,
+    *,
+    embedding_deployment: str = EMBEDDING_DEPLOYMENT,
 ) -> Summary:
     """Upload the chunks and delete whatever the index holds beyond them."""
     documents = (

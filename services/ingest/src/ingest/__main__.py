@@ -52,8 +52,7 @@ def main() -> None:
     parser.add_argument(
         "--embedding-deployment",
         default=EMBEDDING_DEPLOYMENT,
-        help="embedding deployment to compute vectors with "
-        "(default: %(default)s)",
+        help="embedding deployment to compute vectors with (default: %(default)s)",
     )
     parser.add_argument(
         "--dry-run",
@@ -131,7 +130,10 @@ def push(
     )
     try:
         return push_kb(
-            chunks, search_client, embeddings_client, embedding_deployment=embedding_deployment
+            chunks,
+            search_client,
+            embeddings_client,
+            embedding_deployment=embedding_deployment,
         )
     finally:
         credential.close()
