@@ -1,0 +1,37 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.16/MicrosoftTeams.Schema.json",
+  "manifestVersion": "1.16",
+  "version": "1.0.0",
+  "id": "4ee0f855-64aa-4858-b976-ac3e5f01ddea",
+  "packageName": "se.lden.copaz.itsupport",
+  "developer": {
+    "name": "Ludvig Alden",
+    "websiteUrl": "https://github.com/ludvigalden/copilot-azure-demo",
+    "privacyUrl": "https://github.com/ludvigalden/copilot-azure-demo/blob/main/LICENSE",
+    "termsOfUseUrl": "https://github.com/ludvigalden/copilot-azure-demo/blob/main/LICENSE"
+  },
+  "name": {
+    "short": "IT Support",
+    "full": "IT Support Assistant"
+  },
+  "description": {
+    "short": "IT support agent: cited knowledge answers, ticket creation, profile lookup.",
+    "full": "The IT Support Assistant answers workplace IT questions with cited knowledge-base answers, creates tickets that come back as an Adaptive Card with a ticket number, and looks up your directory profile. It is the Azure-native agent from the copilot-azure-demo repository: the conversation logic lives in code, the bot is registered and channel-wired by Terraform, and every deployment goes through CI."
+  },
+  "icons": {
+    "color": "icons/color.png",
+    "outline": "icons/outline.png"
+  },
+  "accentColor": "#5B5FC9",
+  "bots": [
+    {
+      "botId": "4ee0f855-64aa-4858-b976-ac3e5f01ddea",
+      "scopes": ["personal", "team", "groupChat"],
+      "isNotificationOnly": false,
+      "supportsCalling": false,
+      "supportsVideo": false,
+      "supportsFiles": false
+    }
+  ],
+  "validDomains": []
+}
