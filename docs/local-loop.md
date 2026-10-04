@@ -35,12 +35,17 @@ service (the Terraform-owned index definitions are read there), and
 `Storage Blob Data Contributor` on the staging state blob —
 
 ```sh
-az role assignment create --assignee <sp-app-id> --role "Reader" \
-  --scope "$(az group show -n <prefix>-rg --query id -o tsv)"
-az role assignment create --assignee <sp-app-id> --role "Search Service Contributor" \
-  --scope "$(az search service show -g <prefix>-rg -n <prefix>-srch --query id -o tsv)"
-az role assignment create --assignee <sp-app-id> --role "Storage Blob Data Contributor" \
-  --scope "<state-account-id>/blobServices/default/containers/tfstate/blobs/main-staging.tfstate"
+rg_id="$(az group show -n <prefix>-rg --query id -o tsv)"
+srch_id="$(az search service show -g <prefix>-rg \
+  -n <prefix>-srch --query id -o tsv)"
+state_id="<state-account-id>/blobServices/default/containers/tfstate"
+
+az role assignment create --assignee <sp-app-id> --role "Reader" --scope "$rg_id"
+az role assignment create --assignee <sp-app-id> \
+  --role "Search Service Contributor" --scope "$srch_id"
+az role assignment create --assignee <sp-app-id> \
+  --role "Storage Blob Data Contributor" \
+  --scope "$state_id/blobs/main-staging.tfstate"
 ```
 
 The principal's two remaining grants are managed by the staging apply
@@ -72,6 +77,7 @@ and are un-committable by construction (the deny-by-default
 - `.vars` — the staging environment's variables, which Actions serves
   from the GitHub environment and the local run serves from this file;
   the entry point passes it automatically:
+
   ```dotenv
   NAME_PREFIX=<prefix>-staging
   SHARED_PREFIX=<prefix>
@@ -85,12 +91,16 @@ and are un-committable by construction (the deny-by-default
   AZURE_TENANT_ID=<tenant>
   AZURE_SUBSCRIPTION_ID=<subscription>
   CD_PRINCIPAL_OBJECT_ID=<cd object id>
+  ACT_PRINCIPAL_OBJECT_ID=<act object id>
   ```
+
 - `event.json` — the event payload; its presence marks the run as
   local so production jobs skip themselves:
+
   ```json
   { "act": true }
   ```
+
 - `.actrc` (optional) — standing flags the runner picks up
   automatically, for example a larger default image when a workflow
   needs more of the Actions environment than the small default one

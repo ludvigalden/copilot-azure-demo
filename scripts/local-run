@@ -17,7 +17,7 @@ case "${1:-}" in
         shift
         ;;
     *)
-        echo "usage: $0 <infra|app|ingest|ci|power-platform> [extra options]" >&2
+        echo "usage: $0 <infra|app|ingest|ci|power-platform>" >&2
         exit 64
         ;;
 esac
@@ -27,19 +27,20 @@ esac
     exit 69
 }
 
+set -- \
+    -W "$workflow" \
+    --secret-file .env.local
+
 # The staging jobs read their variables from the environment, which the
 # local runner supplies through a variables file instead.
-vars=""
-[ -f .vars ] && vars="--var-file .vars"
+if [ -f .vars ]; then
+    set -- "$@" --var-file .vars
+fi
 
-event=""
-[ -f event.json ] && event="-e event.json"
+if [ -f event.json ]; then
+    set -- "$@" -e event.json
+fi
 
-exec act \
-    -W "$workflow" \
-    --secret-file .env.local \
-    $vars \
-    $event \
+exec act "$@" \
     -P ubuntu-latest=catthehacker/ubuntu:act-latest \
-    --container-daemon-socket /var/run/docker.sock \
-    "$@"
+    --container-daemon-socket /var/run/docker.sock
