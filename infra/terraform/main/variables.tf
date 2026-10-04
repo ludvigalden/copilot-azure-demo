@@ -88,6 +88,18 @@ variable "extra_redirect_uris" {
   default     = []
 }
 
+# Object ID of the local-loop service principal, when one exists. The
+# staging apply turns its two data-plane grants on (documents on the
+# shared search service, rows on the staging ticket store) so a local
+# ingest run and a local ticket read-back work with the same narrow
+# identity. Empty — the default, and always in the owner apply — turns
+# both off, and the owner's plan never mentions the principal.
+variable "act_principal_object_id" {
+  description = "Object ID of the local loop's service principal, if any."
+  type        = string
+  default     = ""
+}
+
 # Key of the shared AI Services account, passed out of band by a run that
 # consumes the account without being able to list its keys (the local
 # loop's apply identity is read-only on the owner group). The CI identity

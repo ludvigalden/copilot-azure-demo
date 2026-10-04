@@ -155,6 +155,25 @@ resource "azurerm_role_assignment" "openai_user_owner" {
   principal_id         = var.owner_principal_object_id
 }
 
+# The local loop's principal fills the staging index and reads the staging
+# tickets back with its own narrow identity; the staging apply grants it
+# exactly those two data planes and nothing on the management plane.
+resource "azurerm_role_assignment" "act_index_documents" {
+  count = var.act_principal_object_id != "" ? 1 : 0
+
+  scope                = local.search_service_id
+  role_definition_name = "Search Index Data Contributor"
+  principal_id         = var.act_principal_object_id
+}
+
+resource "azurerm_role_assignment" "act_tickets_rows" {
+  count = var.act_principal_object_id != "" ? 1 : 0
+
+  scope                = azurerm_storage_account.tickets.id
+  role_definition_name = "Storage Table Data Contributor"
+  principal_id         = var.act_principal_object_id
+}
+
 # The index is Terraform-owned data plane. The vectorizer and its key live
 # in the write-only sensitive body, merge-patched onto the request at apply
 # time: the key reaches the search service directly from the AI Services

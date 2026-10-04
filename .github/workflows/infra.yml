@@ -38,6 +38,7 @@ env:
   TF_VAR_shared_ai_account_key: ${{ secrets.SHARED_AI_ACCOUNT_KEY }}
   TF_VAR_cd_principal_object_id: ${{ vars.CD_PRINCIPAL_OBJECT_ID }}
   TF_VAR_owner_principal_object_id: ${{ vars.OWNER_PRINCIPAL_OBJECT_ID }}
+  TF_VAR_act_principal_object_id: ${{ vars.ACT_PRINCIPAL_OBJECT_ID }}
   TF_VAR_extra_redirect_uris: ${{ vars.EXTRA_REDIRECT_URIS || '[]' }}
 
 jobs:

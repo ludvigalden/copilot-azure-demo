@@ -31,8 +31,8 @@ az ad sp create-for-rbac \
 plus three narrow grants the pipelines need to read and write their
 own footprint: `Reader` on the main resource group (the shared
 services are read there), `Search Service Contributor` on the search
-service (index definitions are read and written there), and `Storage
-Blob Data Contributor` on the staging state blob —
+service (the Terraform-owned index definitions are read there), and
+`Storage Blob Data Contributor` on the staging state blob —
 
 ```sh
 az role assignment create --assignee <sp-app-id> --role "Reader" \
@@ -42,6 +42,13 @@ az role assignment create --assignee <sp-app-id> --role "Search Service Contribu
 az role assignment create --assignee <sp-app-id> --role "Storage Blob Data Contributor" \
   --scope "<state-account-id>/blobServices/default/containers/tfstate/blobs/main-staging.tfstate"
 ```
+
+The principal's two remaining grants are managed by the staging apply
+itself: set `ACT_PRINCIPAL_OBJECT_ID` on the `staging` GitHub
+environment to the principal's object ID and its next run grants the
+principal `Search Index Data Contributor` (documents, which the
+ingester needs) and `Storage Table Data Contributor` on the staging
+ticket store.
 
 **2. The credential file.** The command that creates the principal
 prints its secret once. Put the four values in `.env.local` (already
