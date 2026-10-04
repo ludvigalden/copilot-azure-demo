@@ -1,13 +1,17 @@
 #!/bin/sh
 # Structural assertions on the Ingest workflow. Overlapping runs must
 # serialize through a workflow-level concurrency group without
-# cancellation, and production must be gated on the staging job actually
-# succeeding: the prod job must need push-staging, its condition must
-# carry no status function that could run it past a failed staging, and
-# it must be false in every event context where the staging job skips.
-# GitHub enforces concurrency only in the real runner, so this proves
-# the workflow's shape, not its runtime behavior. Hermetic: it reads
-# the repository's own files and touches no network and no cloud.
+# cancellation, the publishing path must be the chain
+# validate -> push-staging -> push with no continue-on-error escape
+# hatch on it, and production must be gated on the staging job actually
+# succeeding: the prod job must need both prerequisites, its condition
+# must carry no status function that could run it past a failed
+# staging, it must keep the negated github.event.act term so a local
+# act run cannot reach production, and it must be false in every event
+# context where the staging job skips. GitHub enforces concurrency only
+# in the real runner, so this proves the workflow's shape, not its
+# runtime behavior. Hermetic: it reads the repository's own files and
+# touches no network and no cloud.
 set -eu
 
 cd "$(git rev-parse --show-toplevel)"
@@ -22,6 +26,7 @@ fail() {
 
 if python3 -c 'import yaml' >/dev/null 2>&1; then
     python3 - "$workflow" <<'PY' || exit 1
+import re
 import sys
 
 import yaml
@@ -63,6 +68,26 @@ check(
     "push-staging" in needs,
     "the prod 'push' job does not need the staging job",
 )
+check(
+    "validate" in needs,
+    "the prod 'push' job does not need the validate job",
+)
+
+staging = jobs.get("push-staging") or {}
+staging_needs = staging.get("needs") or []
+if isinstance(staging_needs, str):
+    staging_needs = [staging_needs]
+check(
+    "validate" in staging_needs,
+    "the staging job does not need the validate job",
+)
+for name in ("push-staging", "push"):
+    job = jobs.get(name) or {}
+    check(
+        job.get("continue-on-error") is not True,
+        f"the {name} job carries continue-on-error, which would let a "
+        "failed job report success to everything that needs it",
+    )
 
 # A status function in the prod condition could run production past a
 # failed staging job; the skip case is handled below by evaluating the
@@ -76,6 +101,16 @@ for forbidden in ("always(", "failure(", "cancelled("):
         f"the prod gate contains {forbidden!r}, which can run past a "
         "failed staging job",
     )
+
+# The negated act term is what keeps a local act run out of the
+# production environment. The event matrix below cannot see its
+# absence, because staging runs in exactly the contexts where an
+# unguarded prod would.
+check(
+    re.search(r"!\s*github\.event\.act\b", prod_if) is not None,
+    "the prod gate carries no negated github.event.act term, so a "
+    "local act run could reach production",
+)
 
 staging_if = (jobs.get("push-staging") or {}).get("if")
 staging_if = str(staging_if) if staging_if is not None else None
@@ -99,7 +134,10 @@ def evaluate(expr, event, act):
     for bad in ("import", "__", "lambda", "open(", "eval", "exec"):
         if bad in body:
             raise SystemExit(f"unexpected construct in condition: {expr!r}")
-    return bool(eval(body, {"__builtins__": {}}, {}))  # noqa: S307
+    # eval is safe as used here: builtins are stripped and the dangerous
+    # constructs were rejected above, so only a plain boolean expression
+    # reaches it.
+    return bool(eval(body, {"__builtins__": {}}, {}))
 
 
 for event in ("push", "pull_request", "schedule", "workflow_dispatch"):
@@ -144,7 +182,12 @@ else
     grep -q '^  cancel-in-progress: false$' "$workflow" \
         || fail "cancel-in-progress is not explicitly false (grep fallback)"
     grep -q 'needs: \[validate, push-staging\]' "$workflow" \
-        || fail "the prod job does not need push-staging (grep fallback)"
+        || fail "the prod job does not need push-staging or validate (grep fallback)"
+    grep -q '^    needs: validate$' "$workflow" \
+        || fail "the staging job does not need validate (grep fallback)"
+    if grep -q 'continue-on-error' "$workflow"; then
+        fail "a publishing job carries continue-on-error (grep fallback)"
+    fi
     if grep -Eq 'always\(|failure\(|cancelled\(' "$workflow"; then
         fail "a status function appears in a job or step condition (grep fallback)"
     fi

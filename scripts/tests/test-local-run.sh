@@ -87,8 +87,19 @@ if ! grep -q "^local-run: act exited with status $fail_rc\$" "$root/fail.log"; t
     tail -n 5 "$root/fail.log" >&2
     exit 1
 fi
+if [ "$(tail -n 1 "$root/fail.log")" \
+    != "local-run: act exited with status $fail_rc" ]; then
+    echo "FAIL: the verdict line is not the failing run's last output line" >&2
+    tail -n 5 "$root/fail.log" >&2
+    exit 1
+fi
 if [ "$green_rc" -ne 0 ]; then
     echo "FAIL: the passing workflow exited $green_rc through $entry" >&2
+    tail -n 5 "$root/green.log" >&2
+    exit 1
+fi
+if ! grep -q "^local-run: act exited with status 0\$" "$root/green.log"; then
+    echo "FAIL: the passing run's output lacks its status-0 verdict line" >&2
     tail -n 5 "$root/green.log" >&2
     exit 1
 fi
