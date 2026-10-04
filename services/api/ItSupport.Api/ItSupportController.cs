@@ -20,11 +20,26 @@ public sealed class ItSupportController(
     // authentication must fail loudly: no Authorization header means a guest,
     // a valid token the caller's identity, and any header that failed to
     // authenticate — a malformed, empty, whitespace, or non-bearer credential
-    // — a 401 challenge rather than a silent downgrade to guest.
+    // — a 401 challenge rather than a silent downgrade to guest. A token that
+    // authenticated without the delegated access_as_user scope is challenged
+    // the same way: an app-only roles token, or a delegated token naming an
+    // unrelated scope, is not a credential this API accepts.
     private bool PresentedCredentialsAreInvalid()
     {
         return Request.Headers.Authorization.Count > 0
-            && User.Identity?.IsAuthenticated != true;
+            && (User.Identity?.IsAuthenticated != true || !HasDelegatedScope(User));
+    }
+
+    // Delegated access requires the access_as_user scope, read from the
+    // token's scp claim; the claim surfaces either under its short name or
+    // under the identity-claim URI depending on the handler's inbound claim
+    // mapping, so both spellings are read.
+    private static bool HasDelegatedScope(ClaimsPrincipal user)
+    {
+        var scopes = user.FindFirst("scp")?.Value
+            ?? user.FindFirst("http://schemas.microsoft.com/identity/claims/scope")?.Value;
+        return scopes?.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Contains("access_as_user", StringComparer.Ordinal) == true;
     }
 
     [AllowAnonymous]
@@ -60,8 +75,11 @@ public sealed class ItSupportController(
     }
 
     // Sign-in is optional: a signed-in caller gets their directory profile
-    // read on their behalf, an anonymous caller the guest profile.
+    // read on their behalf, an anonymous caller the guest profile. The
+    // endpoint is guest-open, so it is rate limited like the other
+    // guest-open endpoints.
     [AllowAnonymous]
+    [EnableRateLimiting(RateLimitPolicy)]
     public override async Task<ActionResult<UserProfile>> GetMyProfile(CancellationToken cancellationToken = default)
     {
         if (PresentedCredentialsAreInvalid())
