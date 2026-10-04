@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+import gate
 import produce
 from produce import Budget, BudgetExceeded, ProduceError, RunConfig
 
@@ -30,6 +31,29 @@ def make_config(tmp_path, questions=1):
         key_env="EVAL_TEST_KEY",
         output_path=tmp_path / "results" / "run.json",
     )
+
+
+def cli_arguments(config):
+    return [
+        "--endpoint",
+        config.endpoint,
+        "--revision",
+        config.answer_revision,
+        "--image",
+        config.answer_image,
+        "--judge-host",
+        config.judge_host,
+        "--deployment",
+        config.judge_deployment,
+        "--api-version",
+        config.judge_api_version,
+        "--key-env",
+        config.key_env,
+        "--dataset",
+        str(config.dataset_path),
+        "--output",
+        str(config.output_path),
+    ]
 
 
 def answer_body():
@@ -68,20 +92,24 @@ class FakeTransport:
         self.responses = list(responses)
         self.calls = []
 
-    def __call__(self, method, url, headers, body):
-        self.calls.append((method, url, headers, json.loads(body)))
+    def __call__(self, method, url, headers, body, timeout):
+        self.calls.append((method, url, headers, json.loads(body), timeout))
         status, payload = self.responses.pop(0)
         return produce.HttpResponse(status, json.dumps(payload).encode())
 
 
-def test_citation_filenames_dedupe_in_order():
-    citations = (
-        ("t", "https://github.com/o/r/blob/main/kb/a.md"),
-        ("t", "https://github.com/o/r/blob/main/kb/b.md?x=1"),
-        ("t", "https://github.com/o/r/blob/main/kb/a.md#section"),
-    )
+class ServingThenDeadTransport:
+    """Serves canned responses, then raises the run's blocking error."""
 
-    assert produce.citation_filenames(citations) == ("a.md", "b.md")
+    def __init__(self, responses, error):
+        self.responses = list(responses)
+        self.error = error
+
+    def __call__(self, method, url, headers, body, timeout):
+        if self.responses:
+            status, payload = self.responses.pop(0)
+            return produce.HttpResponse(status, json.dumps(payload).encode())
+        raise self.error
 
 
 def test_retrieval_hit_reports_the_rank():
@@ -148,6 +176,48 @@ def test_the_judge_call_caps_output_tokens(tmp_path, monkeypatch):
     assert transport.calls[0][2]["api-key"] == "sekrit-value"
 
 
+def test_each_leg_times_out_against_its_own_constant(tmp_path, monkeypatch):
+    monkeypatch.setenv("EVAL_TEST_KEY", "sekrit-value")
+    config = make_config(tmp_path)
+    transport = FakeTransport([(200, answer_body()), (200, judge_body())])
+
+    produce.run(config, transport, lambda seconds: None)
+
+    answer_call, judge_call = transport.calls[0], transport.calls[1]
+    assert answer_call[1] == config.endpoint
+    assert answer_call[4] == produce.ANSWER_TIMEOUT_SECONDS
+    assert judge_call[1].startswith(f"https://{config.judge_host}/")
+    assert judge_call[4] == produce.JUDGE_TIMEOUT_SECONDS
+    assert produce.ANSWER_TIMEOUT_SECONDS != produce.JUDGE_TIMEOUT_SECONDS
+
+
+def test_default_transport_passes_the_timeout_to_urlopen(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *arguments):
+            return False
+
+    def fake_urlopen(request, timeout):
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(produce.urllib.request, "urlopen", fake_urlopen)
+
+    response = produce.default_transport("GET", "https://example.test/x", {}, b"", 42.0)
+
+    assert captured["timeout"] == 42.0
+    assert response.status == 200
+
+
 def test_a_full_run_passes_and_records_provenance(tmp_path, monkeypatch):
     monkeypatch.setenv("EVAL_TEST_KEY", "sekrit-value")
     config = make_config(tmp_path, questions=2)
@@ -209,28 +279,38 @@ def test_main_exits_four_when_nothing_is_answered(tmp_path, monkeypatch):
     monkeypatch.setattr(produce.time, "sleep", lambda seconds: None)
     config = make_config(tmp_path)
 
-    code = produce.main(
-        [
-            "--endpoint",
-            config.endpoint,
-            "--revision",
-            config.answer_revision,
-            "--image",
-            config.answer_image,
-            "--judge-host",
-            config.judge_host,
-            "--deployment",
-            config.judge_deployment,
-            "--api-version",
-            config.judge_api_version,
-            "--key-env",
-            config.key_env,
-            "--dataset",
-            str(config.dataset_path),
-            "--output",
-            str(config.output_path),
-        ]
-    )
+    code = produce.main(cli_arguments(config))
 
     assert code == 4
-    assert not config.output_path.exists()
+    assert config.output_path.exists()
+    partial = json.loads(config.output_path.read_text())
+    assert len(partial["results"]) == 1
+    assert partial["results"][0]["answer_text"] is None
+    golden = gate.load_golden_dataset(config.dataset_path)
+    verdict = gate.gate_document(partial, golden)
+    assert not verdict.passed
+
+
+def test_main_exits_three_and_keeps_the_partial_document(tmp_path, monkeypatch):
+    monkeypatch.setenv("EVAL_TEST_KEY", "sekrit-value")
+    config = make_config(tmp_path, questions=2)
+    dead = ServingThenDeadTransport(
+        [(200, answer_body()), (200, judge_body())],
+        ProduceError("endpoint unreachable: the endpoint died mid-run"),
+    )
+    monkeypatch.setattr(produce, "default_transport", dead)
+    monkeypatch.setattr(produce.time, "sleep", lambda seconds: None)
+
+    code = produce.main(cli_arguments(config))
+
+    assert code == 3
+    assert config.output_path.exists()
+    partial = json.loads(config.output_path.read_text())
+    assert len(partial["results"]) == 1
+    golden = gate.load_golden_dataset(config.dataset_path)
+    verdict = gate.gate_document(partial, golden)
+    assert not verdict.passed
+    assert any(
+        "no result row for this golden question" in failure
+        for failure in verdict.failures
+    )

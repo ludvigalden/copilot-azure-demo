@@ -96,7 +96,7 @@ A citation being present proves transport only, not quality; judge the answer te
 Reply with only one JSON object, no prose, no code fences:
 {{"groundedness": <int>, "relevance": <int>, "groundedness_rationale": "<=30 words", "relevance_rationale": "<=30 words"}}"""
 
-Transport = Callable[[str, str, dict[str, str], bytes], "HttpResponse"]
+Transport = Callable[[str, str, dict[str, str], bytes, float], "HttpResponse"]
 
 
 @dataclass(frozen=True)
@@ -203,14 +203,14 @@ class RunConfig:
 
 
 def default_transport(
-    method: str, url: str, headers: dict[str, str], body: bytes
+    method: str, url: str, headers: dict[str, str], body: bytes, timeout: float
 ) -> HttpResponse:
     """Send one HTTP request; HTTP error statuses are returned, not raised."""
     request = urllib.request.Request(
         url, data=body if body else None, headers=headers, method=method
     )
     try:
-        with urllib.request.urlopen(request, timeout=JUDGE_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return HttpResponse(response.status, response.read())
     except urllib.error.HTTPError as error:
         return HttpResponse(error.code, error.read())
@@ -246,17 +246,6 @@ def load_dataset(path: Path) -> list[GoldenQuestion]:
     if not questions:
         raise ProduceError(f"{path}: the golden dataset is empty; refusing to run")
     return questions
-
-
-def citation_filenames(citations: tuple[tuple[str, str], ...]) -> tuple[str, ...]:
-    """Extract deduplicated article filenames from citation URLs, in order."""
-    names: list[str] = []
-    for _, url in citations:
-        tail = url.split("://", 1)[-1].rsplit("/", 1)[-1]
-        name = tail.split("?", 1)[0].split("#", 1)[0]
-        if name and name not in names:
-            names.append(name)
-    return tuple(names)
 
 
 def retrieval_hit(
@@ -330,7 +319,7 @@ def ask_answer(
     error = ""
     for attempt in range(ANSWER_ATTEMPTS_PER_QUESTION):
         budget.charge_answer_attempt()
-        response = transport("POST", endpoint, headers, body)
+        response = transport("POST", endpoint, headers, body, ANSWER_TIMEOUT_SECONDS)
         if response.status == 200:
             document = json.loads(response.body.decode("utf-8"), strict=False)
             budget.answer_calls += 1
@@ -380,7 +369,7 @@ def judge_answer(
     error = ""
     for attempt in range(JUDGE_ATTEMPTS_PER_QUESTION):
         budget.charge_judge_attempt()
-        response = transport("POST", url, headers, body)
+        response = transport("POST", url, headers, body, JUDGE_TIMEOUT_SECONDS)
         if response.status == 200:
             document = json.loads(response.body.decode("utf-8"), strict=False)
             budget.judge_calls += 1
@@ -478,7 +467,7 @@ def run(
             filenames: tuple[str, ...] = ()
             hit, rank = False, None
         else:
-            filenames = citation_filenames(answer.citations)
+            filenames = gate.citation_filenames(answer.citations) or ()
             hit, rank = retrieval_hit(
                 filenames, question.expected_article, gate.DEFAULT_K
             )
@@ -519,7 +508,14 @@ def run(
     document = document_so_far(
         config, questions, dataset_bytes, budget, rows, judge_model
     )
-    verdict = gate.gate_document(document)
+    golden = gate.GoldenDataset(
+        path=str(config.dataset_path),
+        sha256=hashlib.sha256(dataset_bytes).hexdigest(),
+        questions=tuple(
+            (question.query, question.expected_article) for question in questions
+        ),
+    )
+    verdict = gate.gate_document(document, golden)
     document["gate"] = {
         "passed": verdict.passed,
         "failures": list(verdict.failures),
@@ -598,7 +594,13 @@ def write_document(document: dict[str, Any], output_path: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Produce one live results document; exit 0 completed, nonzero blocked."""
+    """Produce one live results document and gate it.
+
+    Exit 0 completed and passed the gate; 3 the run failed mid-flight
+    with the partial document kept; 4 nothing was answered and the
+    partial document is kept as evidence; 5 the completed document
+    failed the gate.
+    """
     parser = argparse.ArgumentParser(
         description=(
             "Run the golden question set through the deployed answer path, "
@@ -636,17 +638,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"produce: {error}", file=sys.stderr)
         return 3
     if not any(row["answer_text"] is not None for row in document["results"]):
-        # The incremental writer may have left a partial document behind;
-        # a run in which nothing was answered leaves no results file.
-        config.output_path.unlink(missing_ok=True)
+        # The incremental writer left the partial document behind; it is
+        # kept as evidence of how far the run reached, and the gate
+        # rejects it rather than letting an incomplete run pass.
         print(
-            "produce: no question received an answer; the live run cannot "
-            "complete, so no results document is written",
+            "produce: no question received an answer; the partial results "
+            f"document at {config.output_path} is kept as evidence and "
+            "fails the gate",
             file=sys.stderr,
         )
         return 4
     write_document(document, config.output_path)
     summary = document["gate"]
+    if not summary["passed"]:
+        print(
+            "produce: the gate rejected the completed results document "
+            f"with {len(summary['failures'])} failure(s)",
+            file=sys.stderr,
+        )
+        return 5
     print(
         f"produce: wrote {config.output_path}; "
         f"{summary['judged']}/{len(document['results'])} judged, "
