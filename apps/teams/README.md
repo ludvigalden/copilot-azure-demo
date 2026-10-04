@@ -24,7 +24,7 @@ The scripted org-catalog route was implemented and exercised, and it is
 **blocked by tenant provisioning, not by permissions, manifest schema,
 or anything in this repository**:
 
-```
+```http
 POST https://graph.microsoft.com/v1.0/appCatalogs/teamsApps
 HTTP 403
 {"error":{"code":"Forbidden","message":"Microsoft Teams hasn't been
