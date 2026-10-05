@@ -7,6 +7,7 @@
 // client creation (see test-support.ts).
 import "./test-support"
 import type { PublicClientApplication } from "@azure/msal-browser"
+import { webLightTheme } from "@fluentui/react-components"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { AuthConfig } from "./api/client"
 import { clearFetchLog, setFetchImpl } from "./test-support"
@@ -87,10 +88,25 @@ function themedRoot(): HTMLElement {
   expect(providers).toHaveLength(1)
   const provider = providers[0]
   if (!provider) throw new Error("no FluentProvider root rendered")
-  // The v9 FluentProvider does not expose its theme tokens on the style
-  // attribute (griffel registers them as stylesheet rules, invisible to
-  // jsdom), so the token proof lives in the real-browser gate
-  // (scripts/check-theme.mts); the structural invariant is the point here.
+  // jsdom resolves the Fluent theme's custom properties from griffel's
+  // injected stylesheet, so every branch must compute real tokens here.
+  // The rendered-font proof against a real browser stays with the
+  // release gate (scripts/check-theme.mts).
+  const providerStyle = getComputedStyle(provider)
+  expect(providerStyle.getPropertyValue("--fontFamilyBase").trim()).not.toBe("")
+  expect(providerStyle.getPropertyValue("--colorBrandBackground").trim()).toBe(
+    webLightTheme.colorBrandBackground,
+  )
+  const ask = [...provider.querySelectorAll("button")].find(
+    (button) => (button.textContent ?? "").trim() === "Ask",
+  )
+  if (ask) {
+    const askStyle = getComputedStyle(ask)
+    expect(askStyle.getPropertyValue("--fontFamilyBase").trim()).not.toBe("")
+    expect(askStyle.getPropertyValue("--colorBrandBackground").trim()).toBe(
+      webLightTheme.colorBrandBackground,
+    )
+  }
   return provider
 }
 
