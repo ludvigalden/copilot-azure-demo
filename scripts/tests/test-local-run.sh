@@ -5,7 +5,10 @@
 # runs synthetic ones under the same names through the entry point
 # itself, in a throwaway checkout with dummy credentials and steps that
 # never leave the container. Nothing is fetched: the runner image must
-# already be cached by earlier local runs.
+# already be cached by earlier local runs. The runner's image pull
+# behavior is honest in the entry point's own header: act pulls by
+# default, so a locally built image is used only when it already sits
+# in the local Docker store.
 set -eu
 
 cd "$(git rev-parse --show-toplevel)"
@@ -36,7 +39,7 @@ cp "$entry" "$root/scripts/local-run"
 # workflow whose local run is the usual red signal.
 cat > "$root/.github/workflows/ci.yml" <<'YAML'
 name: CI
-on: push
+on: pull_request
 jobs:
   probe:
     runs-on: ubuntu-latest
@@ -49,7 +52,7 @@ YAML
 # fail everything.
 cat > "$root/.github/workflows/ingest.yml" <<'YAML'
 name: Ingest
-on: push
+on: workflow_dispatch
 jobs:
   probe:
     runs-on: ubuntu-latest

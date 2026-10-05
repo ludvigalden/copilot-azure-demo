@@ -4,9 +4,11 @@ The deployment workflows — the same files Actions runs — also run on
 the workstation, against **staging** and nothing else. A change that
 touches a workflow, the Terraform roots, or anything the pipelines
 build is exercised locally before it is pushed: `infra.yml` reaches
-its plan, `app.yml` reaches a local image build and the staging
-deploy, `ingest.yml` reaches the staging push, and
-`power-platform.yml` reaches its pack. Pushing to `main` is what
+its plan, `app.yml` reaches a local image build, `ingest.yml` reaches
+the staging push, `ci.yml` runs the whole check suite, and
+`power-platform.yml` reaches its pack. `release.yml` is not part of
+the loop: its jobs write production and sit behind the demo
+environment's approval. Pushing to `main` is what
 applies; this loop is the rehearsal.
 
 The runner executes the workflow files inside containers on the local
@@ -112,11 +114,16 @@ and are un-committable by construction (the deny-by-default
 
 ```sh
 scripts/local-run infra     # init, validate, plan — and stop
-scripts/local-run app       # build the image, deploy staging
+scripts/local-run app       # build the image; nothing is pushed
 scripts/local-run ingest    # fill the staging index
 scripts/local-run ci        # contracts, tests, lints
 scripts/local-run power-platform  # pack the solution, skip the import
 ```
+
+Each workflow runs under the event its local run means: `infra` and
+`ingest` run as `workflow_dispatch` — their non-pull-request path —
+while `ci`, `app` and `power-platform` run as `pull_request`.
+`release.yml` has no local form; the entry point does not offer it.
 
 Extra options after the workflow name are passed through to the
 runner (`-j` to select a job, `-v` to mount a volume, and so on).
@@ -137,22 +144,36 @@ Every mutating step that would leave the staging scope — or touch
 production — is gated in the workflow files themselves, so the gate
 travels with the pipeline:
 
-- `infra.yml` applies only outside local runs; locally it stops after
-  the plan. The production job skips itself entirely.
-- `app.yml` pushes the image to the registry only on Actions; a local
-  build stays on the machine, and the production deploy never runs
-  locally. Run the App workflow locally only after the commit is
-  pushed, so the registry already holds the image digest the staging
-  deploy points at.
-- `ingest.yml` fills the staging index locally and the production
-  index only on Actions.
-- `power-platform.yml` packs locally; the import is an Actions-only
-  step.
+- `infra.yml` applies staging only when the release coordinator calls
+  it; locally and on a manual dispatch it stops after the plan. The
+  production job and its plan skip themselves on a local run.
+- `app.yml` pushes the image to the registry and deploys staging only
+  when the release coordinator calls it; a local build stays on the
+  machine. Staging and production deploy CI's digest and only CI's
+  digest — a locally built image is never what staging runs. That is
+  the one gap the loop cannot close (see the limits below).
+- `ingest.yml` fills the staging index locally; the production index
+  is filled by the weekly schedule, or by the release coordinator
+  behind the demo environment's approval.
+- `power-platform.yml` packs locally; the staging import runs only
+  once the staging environment variable is configured, and the
+  production import belongs to the release coordinator behind the
+  demo environment's approval.
+- `release.yml` is not offered locally. Its mutating jobs sit behind
+  the demo environment's approval and a guard that negates the local
+  marker, so a local run cannot reach them.
 
 ## Limits of the local run
 
 The runner is a faithful but not complete Actions host. What differs:
 
+- The runner is not offline: by default it pulls the job image, and
+  any image a step references, from its registry; it uses a locally
+  built image only when a matching one already sits in the local
+  Docker store. The loop proves a workflow's steps and guards, not
+  the exact bytes CI ships — CI builds the images staging and
+  production deploy, and a locally built image can differ from them.
+  That gap is why a local build above is never what staging serves.
 - `services:` containers, `workflow_call` reuse, concurrency groups,
   `permissions` blocks, and `timeout-minutes` are not enforced.
 - Environment protection and environment-scoped secrets do not exist;

@@ -3,24 +3,40 @@
 #
 #   scripts/local-run <infra|app|ingest|ci|power-platform> [extra options]
 #
-# The workflows carry their own local-run guards: Infra reaches its
-# plan and stops, App builds without pushing and reaches the staging
-# deploy, Ingest reaches the staging push, and the Power Platform
-# workflow reaches its pack. Nothing a local run does can reach
-# production. Extra options are passed through to the runner.
+# Each workflow runs under the event a local run means: infra and
+# ingest run as workflow_dispatch (their non-pull-request path), the
+# others as pull_request. The workflows carry their own local-run
+# guards: Infra reaches its plan and stops, App builds the image
+# without pushing it, Ingest reaches the staging push, and the Power
+# Platform workflow reaches its pack. Nothing a local run does can
+# reach production, and release.yml is not offered here at all.
+# Extra options are passed through to the runner.
+#
+# Honesty about the loop: act pulls images from the registry by
+# default — it is not an offline hermetic runner. A locally built
+# image is used only when a matching image already sits in the local
+# Docker store; otherwise the registry one wins. The loop proves the
+# workflow's steps and guards, not the exact bytes CI ships. The one
+# hard gap is documented in docs/local-loop.md: staging cannot consume
+# a CI-built image from a local run.
 set -eu
 cd "$(git rev-parse --show-toplevel)"
 
 case "${1:-}" in
-    infra | app | ingest | ci | power-platform)
+    infra | ingest)
         workflow=".github/workflows/$1.yml"
-        shift
+        event=workflow_dispatch
+        ;;
+    ci | app | power-platform)
+        workflow=".github/workflows/$1.yml"
+        event=pull_request
         ;;
     *)
-        echo "usage: $0 <infra|app|ingest|ci|power-platform>" >&2
+        echo "usage: $0 <infra|ingest|ci|app|power-platform>" >&2
         exit 64
         ;;
 esac
+shift
 
 [ -f .env.local ] || {
     echo ".env.local is missing; see docs/local-loop.md for the setup." >&2
@@ -28,6 +44,7 @@ esac
 }
 
 set -- \
+    "$event" \
     -W "$workflow" \
     --secret-file .env.local
 
