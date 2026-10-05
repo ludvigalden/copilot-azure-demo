@@ -1,16 +1,6 @@
 name: App
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "services/api/**"
-      - "apps/web/**"
-      - "contracts/**"
-      - "Dockerfile"
-      - ".dockerignore"
-      - "Directory.Packages.props"
-      - ".github/workflows/app.yml"
   pull_request:
     paths:
       - "services/api/**"
@@ -20,110 +10,211 @@ on:
       - ".dockerignore"
       - "Directory.Packages.props"
       - ".github/workflows/app.yml"
-  workflow_dispatch:
+  workflow_call:
+    outputs:
+      digest:
+        value: ${{ jobs.build-publish.outputs.digest }}
+      staging_readiness:
+        value: ${{ jobs.verify-staging.outputs.readiness }}
+      staging_smoke:
+        value: ${{ jobs.verify-staging.outputs.smoke }}
+      staging_e2e:
+        value: ${{ jobs.verify-staging.outputs.e2e }}
 
 permissions:
   contents: read
-  packages: write
-  id-token: write
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # The pull-request build: the same image build the release path
+  # publishes, run without a registry credential and without a push.
   build:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v3
+
+      # A pull request proves the image builds; it publishes nothing and
+      # holds no registry or cloud credential to leak.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: ${{ env.ACT != 'true' && 'type=gha' || '' }}
+          cache-to: ${{ env.ACT != 'true' && 'type=gha,mode=max' || '' }}
+
+  # The release path: build once, publish once, and carry the digest
+  # that staging verifies and production deploys.
+  build-publish:
+    if: github.event_name == 'workflow_call'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
     steps:
       - uses: actions/checkout@v7
 
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
-        if: env.ACT != 'true'
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # A local run builds the image but pushes nowhere: the build job has
-      # no Azure identity and no registry credential to leak.
       - uses: docker/build-push-action@v6
+        id: image
         with:
           context: .
-          push: ${{ github.event_name != 'pull_request' && env.ACT != 'true' }}
+          push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-          cache-from: ${{ env.ACT != 'true' && 'type=gha' || '' }}
-          cache-to: ${{ env.ACT != 'true' && 'type=gha,mode=max' || '' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-  # Staging receives the new image first and answers for it before
-  # production is pointed at the same digest.
+  # Staging receives the digest first and answers for it before
+  # production is pointed at the same digest. Deploying by digest —
+  # never by a re-pullable tag — is what makes production receive
+  # exactly the image staging verified.
   deploy-staging:
-    needs: build
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_call'
+    needs: build-publish
     runs-on: ubuntu-latest
     environment: staging
+    permissions:
+      contents: read
+      id-token: write
     concurrency:
-      group: app-staging-${{ github.ref }}
+      # The group names the shared target, not the ref: two releases
+      # changing the staging app must serialize, including across the
+      # verification job that follows.
+      group: app-staging
       cancel-in-progress: false
     steps:
+      - name: Require the staging bindings
+        env:
+          NAME_PREFIX: ${{ vars.NAME_PREFIX }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          : "${NAME_PREFIX:?the staging environment must set NAME_PREFIX}"
+          : "${AZURE_CLIENT_ID:?the staging environment must set AZURE_CLIENT_ID}"
+          : "${AZURE_TENANT_ID:?the staging environment must set AZURE_TENANT_ID}"
+          : "${AZURE_SUBSCRIPTION_ID:?the staging environment must set AZURE_SUBSCRIPTION_ID}"
+
       - uses: azure/login@v2
-        if: env.ACT != 'true'
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      # The local loop signs in with a staging-scoped credential; the
-      # deploy itself stays a plain CLI call against the staging app.
-      - name: Sign in with the local staging credentials
-        if: env.ACT == 'true'
-        env:
-          ACT_ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
-          ACT_ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
-          ACT_ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
-        run: |
-          # The local runner's image carries no Azure CLI; CI's runner has it.
-          command -v az >/dev/null 2>&1 || curl -sL https://aka.ms/InstallAzureCLIDeb | bash > /dev/null
-          az login --service-principal \
-            --username "$ACT_ARM_CLIENT_ID" \
-            --password "$ACT_ARM_CLIENT_SECRET" \
-            --tenant "$ACT_ARM_TENANT_ID" \
-            --output none
-
-      - name: Point the container app at the new image
+      - name: Point the staging container app at the tested digest
         env:
           NAME_PREFIX: ${{ vars.NAME_PREFIX }}
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
         run: |
           az containerapp update \
             --name "${NAME_PREFIX}-app" \
             --resource-group "${NAME_PREFIX}-rg" \
-            --image "$IMAGE"
+            --image "ghcr.io/${{ github.repository }}@sha256:${{ needs.build-publish.outputs.digest }}"
 
-  deploy:
+  # The staging verification window: readiness, an HTTP smoke of the
+  # public surface, and the headless bot conversation whose citation
+  # assertion is the deterministic retrieval check.
+  verify-staging:
     needs: deploy-staging
-    if: ${{ github.event_name != 'pull_request' && !github.event.act }}
     runs-on: ubuntu-latest
-    environment: demo
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
     concurrency:
-      group: app-demo-${{ github.ref }}
+      group: app-staging
       cancel-in-progress: false
+    outputs:
+      readiness: ${{ steps.readiness.outputs.ready }}
+      smoke: ${{ steps.smoke.outputs.smoke }}
+      e2e: ${{ steps.e2e.outputs.e2e }}
     steps:
+      - uses: actions/checkout@v7
+
+      - name: Require the staging bindings
+        env:
+          NAME_PREFIX: ${{ vars.NAME_PREFIX }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          : "${NAME_PREFIX:?the staging environment must set NAME_PREFIX}"
+          : "${AZURE_CLIENT_ID:?the staging environment must set AZURE_CLIENT_ID}"
+          : "${AZURE_TENANT_ID:?the staging environment must set AZURE_TENANT_ID}"
+          : "${AZURE_SUBSCRIPTION_ID:?the staging environment must set AZURE_SUBSCRIPTION_ID}"
+
       - uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Point the container app at the new image
+      - name: Wait for the new image to answer /health
+        id: readiness
         env:
           NAME_PREFIX: ${{ vars.NAME_PREFIX }}
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
         run: |
-          az containerapp update \
+          fqdn="$(az containerapp show \
             --name "${NAME_PREFIX}-app" \
             --resource-group "${NAME_PREFIX}-rg" \
-            --image "$IMAGE"
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)"
+          url="https://$fqdn/health"
+          ready=false
+          status=000
+          for _ in $(seq 1 30); do
+            status="$(curl --silent --output /dev/null --write-out '%{http_code}' "$url")"
+            if [ "$status" = "200" ]; then
+              ready=true
+              break
+            fi
+            sleep 10
+          done
+          if [ "$ready" != true ]; then
+            echo "staging /health never answered 200 within the polling window (last status $status)" >&2
+            exit 1
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke the HTTP surface
+        id: smoke
+        env:
+          NAME_PREFIX: ${{ vars.NAME_PREFIX }}
+        run: |
+          fqdn="$(az containerapp show \
+            --name "${NAME_PREFIX}-app" \
+            --resource-group "${NAME_PREFIX}-rg" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)"
+          curl --fail --silent --show-error "https://$fqdn/" > /dev/null
+          curl --fail --silent --show-error "https://$fqdn/health" > /dev/null
+          echo "smoke=pass" >> "$GITHUB_OUTPUT"
+
+      - name: Prove the knowledge answer end to end
+        id: e2e
+        env:
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          BOT_NAME: ${{ format('{0}-bot', vars.NAME_PREFIX) }}
+          BOT_RESOURCE_GROUP: ${{ format('{0}-rg', vars.NAME_PREFIX) }}
+          EXPECTED_CITATION: printer.md
+        run: |
+          sh scripts/verify-bot-conversation.sh
+          echo "e2e=pass" >> "$GITHUB_OUTPUT"

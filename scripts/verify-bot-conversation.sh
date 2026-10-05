@@ -11,6 +11,10 @@
 #
 #   az login            # as demo@ (subscription Owner)
 #   scripts/verify-bot-conversation.sh
+#
+# Set EXPECTED_CITATION to a source file name (e.g. printer.md) to
+# additionally require that source to appear in the answer; unset, the
+# generic citation check stands alone.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,6 +27,7 @@ subscription="${AZURE_SUBSCRIPTION_ID:-654085ac-1de7-4f78-9a90-473a05012c34}"
 resource_group="${BOT_RESOURCE_GROUP:-copaz-rg}"
 bot_name="${BOT_NAME:-copaz-bot}"
 question="${BOT_QUESTION:-How do I fix the office printer?}"
+expected_citation="${EXPECTED_CITATION:-}"
 
 az account show >/dev/null 2>&1 || { echo "run az login first" >&2; exit 1; }
 
@@ -49,7 +54,8 @@ if not keys:
 print(keys[0])
 ')"
 
-DIRECT_LINE_KEY="$direct_line_key" BOT_QUESTION="$question" python3 <<'PY'
+DIRECT_LINE_KEY="$direct_line_key" BOT_QUESTION="$question" \
+  EXPECTED_CITATION="$expected_citation" python3 <<'PY'
 import json
 import os
 import sys
@@ -59,6 +65,7 @@ import urllib.request
 
 key = os.environ["DIRECT_LINE_KEY"]
 question = os.environ["BOT_QUESTION"]
+expected_citation = os.environ.get("EXPECTED_CITATION", "")
 base = "https://directline.botframework.com/v3/directline"
 
 
@@ -134,7 +141,13 @@ answer = "\n".join(a["text"] for a in replies)
 print("  bot:", answer[:400].replace("\n", " "))
 
 cited = "Sources:" in answer or "[1]" in answer
+if expected_citation:
+    cited = cited and expected_citation in answer
 print()
-print("cited answer:", "PASS" if cited else "FAIL")
+if expected_citation:
+    print("cited answer (with %s):" % expected_citation,
+          "PASS" if cited else "FAIL")
+else:
+    print("cited answer:", "PASS" if cited else "FAIL")
 sys.exit(0 if cited else 1)
 PY
