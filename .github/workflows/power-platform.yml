@@ -1,17 +1,15 @@
 name: Power Platform
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "apps/power-platform/**"
-      - "contracts/openapi/**"
-      - ".github/workflows/power-platform.yml"
   pull_request:
     paths:
       - "apps/power-platform/**"
       - "contracts/openapi/**"
       - ".github/workflows/power-platform.yml"
+  workflow_call:
+    outputs:
+      solution_version:
+        value: ${{ jobs.pack.outputs.solution_version }}
   workflow_dispatch:
 
 permissions:
@@ -24,16 +22,26 @@ env:
 jobs:
   pack:
     runs-on: ubuntu-latest
+    outputs:
+      solution_version: ${{ steps.version.outputs.solution_version }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Read the solution version from the unpacked manifest
+        id: version
+        run: |
+          version="$(sed -n 's:.*<Version>\([^<]*\)</Version>.*:\1:p' \
+            apps/power-platform/solution/Other/Solution.xml)"
+          : "${version:?no <Version> element found in Other/Solution.xml}"
+          echo "solution_version=$version" >> "$GITHUB_OUTPUT"
 
       - uses: microsoft/powerplatform-actions/actions-install@v1.9.2
 
       - name: Pack the unmanaged solution
         uses: microsoft/powerplatform-actions/pack-solution@v1.9.2
         with:
-          solution-folder: ${{ env.SOLUTION_FOLDER }}
           solution-file: ${{ env.SOLUTION_FILE }}
+          solution-folder: ${{ env.SOLUTION_FOLDER }}
           solution-type: Unmanaged
 
       - uses: actions/upload-artifact@v4
@@ -42,92 +50,62 @@ jobs:
           path: ${{ env.SOLUTION_FILE }}
           if-no-files-found: error
 
-  import:
+  # The staging environment for Power Platform is not configured yet:
+  # until a POWER_PLATFORM_STAGING_ENVIRONMENT_URL variable exists on
+  # the staging environment, this job skips green with a message. The
+  # gate reads a dedicated variable deliberately: the repository-level
+  # POWER_PLATFORM_ENVIRONMENT_URL points at the production
+  # environment, and a job carrying the staging environment must not
+  # import into it by shadow-reading that name. TODO: functional
+  # verification of the staging import — drive the connector the way
+  # the production import does — once a staging environment exists to
+  # verify against.
+  staging-import:
     needs: pack
-    # Skips (green) while the environment is not configured. The gate is
-    # read at job-if evaluation, which sees repository variables but not
-    # environment-scoped ones; POWER_PLATFORM_ENVIRONMENT_URL therefore
-    # exists both as a repository variable (this gate) and as a demo
-    # environment variable (the value the steps below read). A local run
-    # reaches the pack and stops: the import never runs there.
-    if: >-
-      github.event_name != 'pull_request' &&
-      !github.event.act &&
-      vars.POWER_PLATFORM_ENVIRONMENT_URL != ''
     runs-on: ubuntu-latest
-    environment: demo
+    environment: staging
     permissions:
-      id-token: write
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: itsupport-unmanaged
+          path: out
+
+      - name: Decide whether a staging environment is configured
+        id: gate
+        env:
+          STAGING_URL: ${{ vars.POWER_PLATFORM_STAGING_ENVIRONMENT_URL }}
+        run: |
+          if [ -n "$STAGING_URL" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "No staging Power Platform environment is configured."
+            echo "Set POWER_PLATFORM_STAGING_ENVIRONMENT_URL on the"
+            echo "staging environment to enable the staging import."
+          fi
+
       - uses: azure/login@v2
+        if: steps.gate.outputs.configured == 'true'
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - uses: microsoft/powerplatform-actions/actions-install@v1.9.2
+        if: steps.gate.outputs.configured == 'true'
 
-      - name: Resolve the host the connector should call
-        env:
-          PUBLIC_HOSTNAME: ${{ secrets.PUBLIC_HOSTNAME }}
-          NAME_PREFIX: ${{ vars.NAME_PREFIX }}
-        run: |
-          if [ -n "$PUBLIC_HOSTNAME" ]; then
-            host="$PUBLIC_HOSTNAME"
-          else
-            host="$(az containerapp show \
-              --name "${NAME_PREFIX}-app" \
-              --resource-group "${NAME_PREFIX}-rg" \
-              --query properties.configuration.ingress.fqdn \
-              --output tsv)"
-          fi
-          echo "IT_SUPPORT_API_HOST=$host" >> "$GITHUB_ENV"
-
-      - name: Point the connector at the resolved host
-        run: |
-          jq --arg host "$IT_SUPPORT_API_HOST" \
-            '.host = $host' \
-            apps/power-platform/solution/Connector/itsup_ItSupportApi_openapidefinition.json > /tmp/host-swap.json
-          mv /tmp/host-swap.json apps/power-platform/solution/Connector/itsup_ItSupportApi_openapidefinition.json
-          jq -r .host apps/power-platform/solution/Connector/itsup_ItSupportApi_openapidefinition.json
-
-      - name: Fill the deployment settings with the resolved host
-        run: |
-          mkdir -p out
-          jq --arg host "$IT_SUPPORT_API_HOST" \
-            '.EnvironmentVariables |= map(if .SchemaName == "itsup_ApiHost" then .Value = $host else . end)' \
-            apps/power-platform/deployment-settings.json > out/deployment-settings.json
-          cat out/deployment-settings.json
-
-      - name: Pack the unmanaged solution
-        uses: microsoft/powerplatform-actions/pack-solution@v1.9.2
-        with:
-          solution-folder: ${{ env.SOLUTION_FOLDER }}
-          solution-file: ${{ env.SOLUTION_FILE }}
-          solution-type: Unmanaged
-
-      - name: Import and publish the solution
+      - name: Import and publish the solution to staging
+        if: steps.gate.outputs.configured == 'true'
         uses: microsoft/powerplatform-actions/import-solution@v1.9.2
         with:
-          environment-url: ${{ vars.POWER_PLATFORM_ENVIRONMENT_URL }}
+          environment-url: ${{ vars.POWER_PLATFORM_STAGING_ENVIRONMENT_URL }}
           solution-file: ${{ env.SOLUTION_FILE }}
           app-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          use-deployment-settings-file: true
-          deployment-settings-file: out/deployment-settings.json
           publish-changes: true
           force-overwrite: true
-
-      - name: Verify the connector registration in Dataverse
-        env:
-          ENVIRONMENT_URL: ${{ vars.POWER_PLATFORM_ENVIRONMENT_URL }}
-        run: |
-          token="$(az account get-access-token --resource "$ENVIRONMENT_URL" --query accessToken --output tsv)"
-          curl --fail --silent --show-error \
-            --header "Authorization: Bearer $token" \
-            --get --data-urlencode '$select=connectorid,name,createdon' \
-            "$ENVIRONMENT_URL/api/data/v9.2/connectors" \
-            | jq -r '.value[] | "connector \(.name) (\(.connectorid)) created \(.createdon)"'
