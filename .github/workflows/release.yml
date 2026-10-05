@@ -18,6 +18,11 @@ on:
       - "apps/power-platform/**"
       - ".github/workflows/**"
   workflow_dispatch:
+    inputs:
+      release_app:
+        description: 'Intentionally release the app component from this ref'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -41,6 +46,13 @@ jobs:
       infra: ${{ steps.filter.outputs.infra }}
       power_platform: ${{ steps.filter.outputs.power_platform }}
     steps:
+      - name: Refuse intentional releases off main
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "refusing an intentional release_app dispatch off main:" >&2
+          echo "  github.ref = ${{ github.ref }} (only refs/heads/main may release by hand)" >&2
+          exit 1
+
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -82,6 +94,13 @@ jobs:
           done <<EOF
           $changed
           EOF
+
+          # An explicit release_app dispatch only ever adds the app
+          # selection; it never falsifies what the paths changed.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] &&
+            [ "${{ github.event.inputs.release_app }}" = "true" ]; then
+            app_changed=true
+          fi
 
           {
             echo "app=$app_changed"
@@ -223,6 +242,8 @@ jobs:
           PP_SELECTED: ${{ needs.changes.outputs.power_platform }}
           PP_STAGING_STATUS: ${{ needs.pp-release.outputs.staging_status }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TRIGGER: ${{ github.event_name }}
+          RELEASE_APP_SELECTED: ${{ github.event.inputs.release_app }}
         run: |
           image_value=""
           if [ -n "$APP_DIGEST" ]; then
@@ -242,6 +263,8 @@ jobs:
             --arg staging_smoke "$STAGING_SMOKE" \
             --arg staging_e2e "$STAGING_E2E" \
             --arg run_url "$RUN_URL" \
+            --arg trigger "$TRIGGER" \
+            --arg release_app_selected "$RELEASE_APP_SELECTED" \
             --arg app_selected "$APP_SELECTED" \
             --arg kb_selected "$KB_SELECTED" \
             --arg infra_selected "$INFRA_SELECTED" \
@@ -275,6 +298,8 @@ jobs:
                   elif $solution_version != "" then "released"
                   else "skipped_not_configured" end)
               },
+              trigger: $trigger,
+              selection_source: (if $release_app_selected == "true" then "dispatch_input" else "push_paths" end),
               run_url: $run_url
             }' > release-identity.json
           cat release-identity.json
@@ -302,6 +327,11 @@ jobs:
               "embedding ${EMBEDDING_DEPLOYMENT_NAME:-embedding}"
             echo "- Selected components: app $APP_SELECTED, kb $KB_SELECTED," \
               "infra $INFRA_SELECTED, power_platform $PP_SELECTED"
+            if [ "$RELEASE_APP_SELECTED" = "true" ]; then
+              echo "- Trigger: workflow_dispatch; selection source: dispatch_input (intentional release)"
+            else
+              echo "- Trigger: $TRIGGER; selection source: push_paths"
+            fi
             if [ "$PP_SELECTED" = "true" ] && [ "$PP_STAGING_STATUS" = "not_configured" ]; then
               echo "- Power Platform: no staging environment configured; import skipped"
             fi

@@ -56,7 +56,7 @@ jobs:
   # The release path: build once, publish once, and carry the digest
   # that staging verifies and production deploys.
   build-publish:
-    if: github.event_name == 'workflow_call'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -90,7 +90,7 @@ jobs:
   # never by a re-pullable tag — is what makes production receive
   # exactly the image staging verified.
   deploy-staging:
-    if: github.event_name == 'workflow_call'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: build-publish
     runs-on: ubuntu-latest
     environment: staging
