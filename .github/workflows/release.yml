@@ -10,6 +10,8 @@ on:
       - "Dockerfile"
       - ".dockerignore"
       - "Directory.Packages.props"
+      - "dotnet-tools.json"
+      - "ItSupport.slnx"
       - "kb/**"
       - "services/ingest/**"
       - "infra/terraform/main/**"
@@ -67,6 +69,8 @@ jobs:
             [ -z "$path" ] && continue
             case "$path" in
               services/api/*|apps/web/*|contracts/*|Dockerfile|.dockerignore|Directory.Packages.props)
+                app_changed=true ;;
+              dotnet-tools.json|ItSupport.slnx)
                 app_changed=true ;;
               kb/*|services/ingest/*)
                 kb_changed=true ;;

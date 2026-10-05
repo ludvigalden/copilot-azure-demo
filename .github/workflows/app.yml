@@ -9,6 +9,8 @@ on:
       - "Dockerfile"
       - ".dockerignore"
       - "Directory.Packages.props"
+      - "dotnet-tools.json"
+      - "ItSupport.slnx"
       - ".github/workflows/app.yml"
   workflow_call:
     outputs:

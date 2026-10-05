@@ -62,11 +62,22 @@ jobs:
   # verify against.
   staging-import:
     needs: pack
+    # Import never runs from a pull-request context: an untrusted
+    # author must not reach the staging environment. workflow_call
+    # keeps the caller's event, so a release push to main passes and
+    # a pull request never does.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: staging
     permissions:
       contents: read
       id-token: write
+    concurrency:
+      # One import at a time per staging target: a second run must
+      # queue, not cancel, since a cancelled import can leave the
+      # environment half-published.
+      group: pp-staging
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
 
