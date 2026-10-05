@@ -1,31 +1,4 @@
-"""The evaluation quality gate.
-
-Pure functions over per-item metric values: every item must reach the
-minimum groundedness, the mean relevance across the set must reach its
-threshold, and every expected article must be retrieved within the top
-``k`` results. This module judges metric values; it does not produce
-them — ``produce.py`` runs the live evaluation and writes the results
-document this gate judges.
-
-The gate fails closed: an empty run is a failure, not a vacuous pass,
-and a results document with incomplete provenance is rejected before
-its numbers are read.
-
-A document must answer the authoritative golden dataset in full. The
-dataset a document claims (``run.dataset``) is not trusted on its own:
-the recorded hash and question count are compared against the golden
-dataset this module loads, every result row must carry one of the
-golden questions exactly once with the golden pair's expected article,
-and every golden question must have a row. A run cut short — by a
-crash, a spent budget, or an edit — is missing rows and fails.
-
-Deterministic retrieval is judged from the citations the answer path
-actually returned, re-derived here the same way the producer derives
-them, so the row's recorded filenames and verdict must agree with that
-derivation. Groundedness and relevance are model-judged scores the
-producer recorded. A recorded retrieval story that contradicts the
-recorded citations is doctored data and fails the gate.
-"""
+"""Fail-closed quality, retrieval, provenance and complete golden-set gates."""
 
 from __future__ import annotations
 
@@ -34,6 +7,7 @@ import hashlib
 import json
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -121,12 +95,7 @@ class GoldenDatasetError(RuntimeError):
 
 
 def load_golden_dataset(path: Path | None = None) -> GoldenDataset:
-    """Load the authoritative golden dataset this gate judges against.
-
-    The hash is taken over the raw bytes of the file — the same value
-    the producer records — so a document and the dataset it claims can
-    be compared without trusting either.
-    """
+    """Load authoritative questions and hash their raw source bytes."""
     path = path if path is not None else AUTHORITATIVE_DATASET
     try:
         raw = Path(path).read_bytes()
@@ -160,14 +129,7 @@ def load_golden_dataset(path: Path | None = None) -> GoldenDataset:
 
 
 def citation_filenames(citations: Any) -> tuple[str, ...] | None:
-    """Article filenames derived from a citations record, first-seen order.
-
-    Returns ``None`` when the record is not a sequence of ``[title, url]``
-    pairs: a malformed record is a schema failure the gate reports
-    rather than a derivation it guesses past. The derivation matches
-    the producer's — strip scheme and host, take the last path segment,
-    strip query and fragment, dedupe keeping first occurrence.
-    """
+    """Derive first-seen article names from title/URL pairs; reject malformed pairs."""
     if not isinstance(citations, (list, tuple)):
         return None
     names: list[str] = []
@@ -256,15 +218,7 @@ def _judge_score(value: Any) -> float | None:
 def gate_document(
     document: dict[str, Any], golden: GoldenDataset | None = None
 ) -> GateResult:
-    """Judge a full results document: provenance, completeness, then metrics.
-
-    Completeness is judged against the authoritative golden dataset, not
-    the document's own account of it. A count check trusting the
-    document's claimed question count is insufficient: the recorded
-    hash and count are compared against the golden data, every row must
-    carry a golden question exactly once with the golden expected
-    article, and every golden question must have a row.
-    """
+    """Judge provenance and every authoritative question exactly once, then metrics."""
     failures: list[str] = []
     failures.extend(
         f"missing provenance: {path}" for path in missing_provenance(document)
@@ -373,6 +327,260 @@ def gate_document(
     if items:
         failures.extend(evaluate(items, DEFAULT_K).failures)
     return GateResult(passed=not failures, failures=tuple(failures))
+
+
+CANDIDATE_FIELDS = (
+    "staging_prefix",
+    "shared_prefix",
+    "source_commit",
+    "kb_tree",
+    "kb_source_commit",
+    "image_source_commit",
+    "image",
+    "revision",
+    "index_name",
+    "index_snapshot_sha256",
+    "index_definition_sha256",
+    "document_count",
+    "chat_deployment",
+    "embedding_deployment",
+    "chat_model",
+    "embedding_model",
+    "answer_prompt_sha256",
+    "judge_prompt_sha256",
+    "judge_host",
+    "judge_api_version",
+    "dataset_sha256",
+    "run_id",
+    "endpoint",
+    "components",
+)
+
+
+def gate_release_document(
+    document: dict[str, Any],
+    candidate: dict[str, Any],
+    now: datetime | None = None,
+) -> GateResult:
+    """Validate fresh evidence against the independently captured candidate."""
+    if not isinstance(document, dict) or not isinstance(candidate, dict):
+        return GateResult(False, ("malformed release document or candidate",))
+    verdict = gate_document(document)
+    failures = list(verdict.failures)
+
+    def record(value: Any, name: str) -> dict:
+        if not isinstance(value, dict):
+            failures.append(f"malformed record: {name}")
+            return {}
+        return value
+
+    def integer(value: Any, lower: int, upper: int, name: str) -> int:
+        if type(value) is not int or not lower <= value <= upper:
+            failures.append(f"invalid budget or usage: {name}")
+            return 0
+        return value
+
+    evidence = record(document.get("release_evidence"), "release_evidence")
+    bound = record(evidence.get("candidate"), "candidate")
+    for field in CANDIDATE_FIELDS:
+        value = candidate.get(field)
+        if not value or bound.get(field) != value:
+            failures.append(f"missing or mismatched candidate: {field}")
+    if bound != candidate:
+        failures.append("candidate contains unbound or changed fields")
+    if evidence.get("run_id") != candidate.get("run_id"):
+        failures.append("evaluation run ID does not match this run")
+    for key, path in (
+        ("image", "run.answer_image"),
+        ("revision", "run.answer_revision"),
+        ("endpoint", "run.answer_endpoint"),
+        ("dataset_sha256", "run.dataset.sha256"),
+        ("judge_host", "run.judge.endpoint_host"),
+        ("chat_deployment", "run.judge.deployment"),
+        ("judge_api_version", "run.judge.api_version"),
+    ):
+        if candidate.get(key) != _resolve(document, path):
+            failures.append(f"provenance does not match candidate: {key}")
+    prompt = _resolve(document, "run.judge.prompt")
+    prompt_hash = (
+        hashlib.sha256(prompt.encode()).hexdigest() if isinstance(prompt, str) else ""
+    )
+    if (
+        prompt_hash != candidate.get("judge_prompt_sha256")
+        or evidence.get("prompt_sha256") != prompt_hash
+    ):
+        failures.append("judge prompt does not match candidate")
+    model = candidate.get("chat_model")
+    if not isinstance(model, dict) or not model.get("name") or not model.get("version"):
+        failures.append("invalid model identity")
+    elif _resolve(document, "run.judge.model") != f"{model['name']}-{model['version']}":
+        failures.append("judge response model differs from captured deployment")
+    import re
+
+    for key in ("source_commit", "kb_tree", "kb_source_commit", "image_source_commit"):
+        if not isinstance(candidate.get(key), str) or not re.fullmatch(
+            r"[0-9a-f]{40}", candidate[key]
+        ):
+            failures.append(f"invalid immutable source: {key}")
+    for key in (
+        "index_snapshot_sha256",
+        "index_definition_sha256",
+        "answer_prompt_sha256",
+        "judge_prompt_sha256",
+        "dataset_sha256",
+    ):
+        if not isinstance(candidate.get(key), str) or not re.fullmatch(
+            r"[0-9a-f]{64}", candidate[key]
+        ):
+            failures.append(f"invalid digest: {key}")
+    if not isinstance(candidate.get("image"), str) or not re.fullmatch(
+        r"[^@]+@sha256:[0-9a-f]{64}", candidate["image"]
+    ):
+        failures.append("invalid image digest")
+    for key in ("chat_model", "embedding_model"):
+        value = candidate.get(key)
+        if not isinstance(value, dict) or any(
+            not isinstance(value.get(part), str) or not value[part]
+            for part in ("name", "version", "format")
+        ):
+            failures.append(f"invalid model: {key}")
+    integer(candidate.get("document_count"), 1, 10000, "document count")
+    components = candidate.get("components")
+    if (
+        not isinstance(components, list)
+        or not components
+        or any(
+            not isinstance(part, str) or part not in ("app", "kb", "evaluation")
+            for part in components
+        )
+        or len({part for part in components if isinstance(part, str)})
+        != len(components)
+    ):
+        failures.append("invalid component selection")
+    if isinstance(components, list):
+        for component, key in (
+            ("app", "image_source_commit"),
+            ("kb", "kb_source_commit"),
+        ):
+            if component in components and candidate.get(key) != candidate.get(
+                "source_commit"
+            ):
+                failures.append(f"selected {component} source differs")
+    clock = now or datetime.now(UTC)
+    try:
+        started, completed, expires = (
+            datetime.fromisoformat(evidence[key])
+            for key in ("started_at", "completed_at", "expires_at")
+        )
+        if not started.tzinfo or not completed.tzinfo or not expires.tzinfo:
+            raise ValueError("timestamps must be timezone-aware")
+        if not started <= completed <= clock < expires:
+            failures.append("stale, future or expired evaluation")
+        if (clock - completed).total_seconds() > 7200:
+            failures.append("evaluation is stale")
+        duration_limit = _resolve(
+            document, "release_evidence.budgets.max_duration_seconds"
+        )
+        if type(duration_limit) is not int or not 1 <= duration_limit <= 900:
+            failures.append("invalid evaluation deadline")
+        elif (completed - started).total_seconds() > duration_limit:
+            failures.append("evaluation exceeded deadline")
+        if not 0 < (expires - started).total_seconds() <= 7200:
+            failures.append("invalid evaluation expiry")
+    except (KeyError, ValueError, TypeError):
+        failures.append("missing or invalid evaluation timestamps")
+    count = len(load_golden_dataset().questions)
+    rows = document.get("results")
+    if not isinstance(rows, list):
+        rows = []
+    budgets = record(evidence.get("budgets"), "budgets")
+    limits = {
+        "answer_attempts_per_question": 4,
+        "judge_attempts_per_question": 6,
+        "total_attempt_cap": 150,
+        "answer_max_output_tokens": 256,
+        "answer_output_token_cap": 15360,
+        "judge_max_output_tokens": 300,
+        "judge_input_byte_cap": 8000,
+        "judge_token_cap": 150000,
+        "max_duration_seconds": 900,
+    }
+    for key, limit in limits.items():
+        if (
+            integer(budgets.get(key), 1, limit, key) != limit
+            and key != "max_duration_seconds"
+        ):
+            failures.append(f"recorded budget differs from enforced policy: {key}")
+    usage = record(_resolve(document, "run.usage"), "run.usage")
+    answer_attempts = integer(
+        usage.get("answer_attempts"), count, count * 4, "answer_attempts"
+    )
+    judge_attempts = integer(
+        usage.get("judge_attempts"), count, count * 6, "judge_attempts"
+    )
+    if answer_attempts + judge_attempts > integer(
+        budgets.get("total_attempt_cap"), 1, 150, "total attempts"
+    ):
+        failures.append("aggregate attempt budget exceeded")
+    for key in ("answer_calls", "judge_calls"):
+        integer(usage.get(key), count, count, key)
+    prompt_tokens = integer(
+        usage.get("judge_prompt_tokens"), 1, 150000, "judge_prompt_tokens"
+    )
+    completion_tokens = integer(
+        usage.get("judge_completion_tokens"), 1, count * 300, "judge_completion_tokens"
+    )
+    reserved = record(evidence.get("usage"), "reserved usage")
+    answer_reserved = integer(
+        reserved.get("reserved_answer_output_tokens"), 1, 15360, "answer reservations"
+    )
+    judge_reserved = integer(
+        reserved.get("reserved_judge_tokens"), 1, 150000, "judge reservations"
+    )
+    if answer_reserved != answer_attempts * 256:
+        failures.append("answer reservations contradict attempts")
+    if (
+        prompt_tokens + completion_tokens > judge_reserved
+        or judge_reserved < judge_attempts * 300
+    ):
+        failures.append("actual judge tokens or attempts exceed reservations")
+    totals = {
+        key: 0
+        for key in (
+            "answer_attempts",
+            "judge_attempts",
+            "judge_prompt_tokens",
+            "judge_completion_tokens",
+            "reserved_judge_tokens",
+        )
+    }
+    for row in rows:
+        if not isinstance(row, dict):
+            failures.append("malformed question record")
+            continue
+        if (
+            not isinstance(row.get("answer_text"), str)
+            or not row["answer_text"].strip()
+            or row.get("answer_error")
+            or row.get("judgment_error")
+        ):
+            failures.append("evaluation contains a failed answer or judgment")
+        row_usage = record(row.get("usage"), "question usage")
+        for key, upper in (
+            ("answer_attempts", 4),
+            ("judge_attempts", 6),
+            ("judge_prompt_tokens", 48000),
+            ("judge_completion_tokens", 300),
+            ("reserved_judge_tokens", 49800),
+        ):
+            totals[key] += integer(row_usage.get(key), 1, upper, f"question {key}")
+        if row_usage.get("judge_model") != _resolve(document, "run.judge.model"):
+            failures.append("question judge model differs")
+    for key, total in totals.items():
+        expected = judge_reserved if key == "reserved_judge_tokens" else usage.get(key)
+        if total != expected:
+            failures.append(f"question usage contradicts aggregate: {key}")
+    return GateResult(not failures, tuple(failures))
 
 
 def main(argv: list[str] | None = None) -> int:

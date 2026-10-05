@@ -1,27 +1,6 @@
-"""The real evaluation producer over the golden question set.
+"""Bound staging evaluation; canned tests prove logic, citations only retrieval.
 
-Runs every golden question through the deployed staging answer path —
-``POST /api/answers`` on the running app, which performs the production
-hybrid retrieval (full-text plus a server-vectorized text query with
-semantic ranking over the knowledge-base index) and a grounded chat
-completion — then judges each answer with one bounded Azure OpenAI call
-against the same chat deployment the app itself uses, and writes one
-results document for the gate in ``gate.py``.
-
-This is a deliberate manual run, never wired into CI. Bounded by
-construction: exactly one answer request per question and one judge
-request per question, with per-request attempt caps, a total-attempt
-budget enforced before every request, and a completion-token cap on the
-judge call. The deterministic retrieval check needs no model at all: it
-compares the article filenames in the citations the endpoint actually
-returned against the expected article in the dataset. The judge scores
-groundedness against the retrieved context and relevance against the
-dataset's ground truth; a citation being present proves transport only
-and is never treated as quality.
-
-Credentials come from the environment only. The account key names the
-judge's ``api-key`` header and is never written to the results document
-or the log.
+Credentials stay in the environment and never enter evidence.
 """
 
 from __future__ import annotations
@@ -36,7 +15,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -127,15 +106,39 @@ class Budget:
     judge_calls: int = 0
     judge_prompt_tokens: int = 0
     judge_completion_tokens: int = 0
+    total_attempt_cap: int = 150
+    judge_token_cap: int = 150_000
+    answer_output_token_cap: int = 15_360
+    reserved_judge_tokens: int = 0
+    reserved_answer_output_tokens: int = 0
+    deadline: float | None = None
+
+    def remaining_timeout(self, limit: float) -> float:
+        if self.deadline is None:
+            return limit
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise BudgetExceeded("evaluation deadline reached")
+        return min(limit, remaining)
+
+    def check_total(self) -> None:
+        self.remaining_timeout(1)
+        if self.answer_attempts + self.judge_attempts >= self.total_attempt_cap:
+            raise BudgetExceeded("aggregate attempt budget spent")
 
     def charge_answer_attempt(self) -> None:
+        self.check_total()
+        if self.reserved_answer_output_tokens + 256 > self.answer_output_token_cap:
+            raise BudgetExceeded("answer output-token budget spent")
         if self.answer_attempts >= self.answer_attempt_cap:
             raise BudgetExceeded(
                 f"answer attempt budget spent: {self.answer_attempts} attempts"
             )
         self.answer_attempts += 1
+        self.reserved_answer_output_tokens += 256
 
     def charge_judge_attempt(self) -> None:
+        self.check_total()
         if self.judge_attempts >= self.judge_attempt_cap:
             raise BudgetExceeded(
                 f"judge attempt budget spent: {self.judge_attempts} attempts"
@@ -178,6 +181,17 @@ class JudgmentOutcome:
     error: str = ""
 
 
+def response_document(response: HttpResponse) -> dict:
+    """Malformed successful responses are failures, never coerced evidence."""
+    try:
+        document = json.loads(response.body.decode("utf-8"))
+    except (ValueError, UnicodeError) as error:
+        raise ProduceError("malformed endpoint JSON") from error
+    if not isinstance(document, dict):
+        raise ProduceError("endpoint response is not an object")
+    return document
+
+
 @dataclass
 class GoldenQuestion:
     """One row of the golden dataset."""
@@ -200,6 +214,11 @@ class RunConfig:
     dataset_path: Path
     key_env: str
     output_path: Path
+    candidate: dict[str, Any] | None = None
+    run_id: str = ""
+    started_at: str = ""
+    max_duration_seconds: int = 900
+    expires_after_seconds: int = 7200
 
 
 def default_transport(
@@ -229,6 +248,8 @@ def load_dataset(path: Path) -> list[GoldenQuestion]:
         if not line.strip():
             continue
         row = json.loads(line)
+        if not isinstance(row, dict):
+            raise ProduceError(f"{path}:{number}: question is not an object")
         missing = [
             key
             for key in ("query", "expected_article", "ground_truth")
@@ -245,31 +266,22 @@ def load_dataset(path: Path) -> list[GoldenQuestion]:
         )
     if not questions:
         raise ProduceError(f"{path}: the golden dataset is empty; refusing to run")
+    if len({question.query for question in questions}) != len(questions):
+        raise ProduceError("duplicate golden question")
     return questions
 
 
 def retrieval_hit(
     filenames: tuple[str, ...], expected_article: str, k: int
 ) -> tuple[bool, int | None]:
-    """Deterministic retrieval verdict: the gate's arithmetic, plus a rank.
-
-    Membership is decided by ``gate.hit_at_k`` so the producer and the
-    gate share one definition of a retrieval hit; the rank is the
-    one-based position of the expected article among the returned
-    citations.
-    """
+    """Share the gate's retrieval verdict and return a one-based citation rank."""
     if not gate.hit_at_k(filenames, expected_article, k):
         return False, None
     return True, filenames.index(expected_article) + 1
 
 
 def parse_judgment(text: str) -> tuple[float | None, float | None, str, str, str]:
-    """Parse the judge reply into scores and rationales.
-
-    Returns ``(groundedness, relevance, groundedness_rationale,
-    relevance_rationale, error)``; the scores are ``None`` whenever the
-    reply carries no usable judgment, and the error says why.
-    """
+    """Return groundedness, relevance, both rationales and a failure message."""
     candidate = text.strip()
     if candidate.startswith("```"):
         candidate = candidate.strip("`")
@@ -319,9 +331,39 @@ def ask_answer(
     error = ""
     for attempt in range(ANSWER_ATTEMPTS_PER_QUESTION):
         budget.charge_answer_attempt()
-        response = transport("POST", endpoint, headers, body, ANSWER_TIMEOUT_SECONDS)
+        response = transport(
+            "POST",
+            endpoint,
+            headers,
+            body,
+            budget.remaining_timeout(ANSWER_TIMEOUT_SECONDS),
+        )
         if response.status == 200:
-            document = json.loads(response.body.decode("utf-8"), strict=False)
+            document = response_document(response)
+            if (
+                not isinstance(document.get("text"), str)
+                or not document["text"].strip()
+            ):
+                raise ProduceError("answer contains no text")
+            for field, keys in (
+                ("citations", ("title", "url")),
+                ("chunks", ("title", "content")),
+            ):
+                items = document.get(field)
+                if (
+                    not isinstance(items, list)
+                    or not items
+                    or len(items) > gate.DEFAULT_K
+                    or any(
+                        not isinstance(item, dict)
+                        or any(
+                            not isinstance(item.get(key), str) or not item[key]
+                            for key in keys
+                        )
+                        for item in items
+                    )
+                ):
+                    raise ProduceError(f"malformed answer {field}")
             budget.answer_calls += 1
             return AnswerOutcome(
                 ok=True,
@@ -365,22 +407,56 @@ def judge_answer(
         "temperature": JUDGE_TEMPERATURE,
     }
     body = json.dumps(payload).encode("utf-8")
+    if len(body) > 8000:
+        raise BudgetExceeded("judge input exceeds 8000 UTF-8 bytes")
     headers = {"Content-Type": "application/json", "api-key": api_key}
     error = ""
     for attempt in range(JUDGE_ATTEMPTS_PER_QUESTION):
         budget.charge_judge_attempt()
-        response = transport("POST", url, headers, body, JUDGE_TIMEOUT_SECONDS)
+        reservation = len(body) + JUDGE_MAX_OUTPUT_TOKENS
+        if budget.reserved_judge_tokens + reservation > budget.judge_token_cap:
+            raise BudgetExceeded("judge token reservation budget spent")
+        budget.reserved_judge_tokens += reservation
+        response = transport(
+            "POST", url, headers, body, budget.remaining_timeout(JUDGE_TIMEOUT_SECONDS)
+        )
         if response.status == 200:
-            document = json.loads(response.body.decode("utf-8"), strict=False)
+            document = response_document(response)
+            usage = document.get("usage")
+            if not isinstance(usage, dict) or any(
+                type(usage.get(key)) is not int or usage[key] < 0
+                for key in ("prompt_tokens", "completion_tokens")
+            ):
+                raise ProduceError("missing or malformed judge token usage")
+            if (
+                usage["completion_tokens"] > JUDGE_MAX_OUTPUT_TOKENS
+                or sum(usage[key] for key in ("prompt_tokens", "completion_tokens"))
+                > reservation
+            ):
+                raise BudgetExceeded("judge response exceeds its reservation")
+            budget.judge_prompt_tokens += usage["prompt_tokens"]
+            budget.judge_completion_tokens += usage["completion_tokens"]
+            if (
+                budget.judge_prompt_tokens + budget.judge_completion_tokens
+                > budget.judge_token_cap
+            ):
+                raise BudgetExceeded("aggregate actual judge-token budget spent")
+            choices = document.get("choices")
+            if (
+                not isinstance(choices, list)
+                or len(choices) != 1
+                or not isinstance(choices[0], dict)
+                or not isinstance(choices[0].get("message"), dict)
+            ):
+                raise ProduceError("malformed judge choices")
+            content = choices[0]["message"].get("content")
+            if (
+                not isinstance(content, str)
+                or not isinstance(document.get("model"), str)
+                or not document["model"]
+            ):
+                raise ProduceError("missing judge content or model")
             budget.judge_calls += 1
-            usage = document.get("usage") or {}
-            budget.judge_prompt_tokens += int(usage.get("prompt_tokens") or 0)
-            budget.judge_completion_tokens += int(usage.get("completion_tokens") or 0)
-            content = str(
-                (document.get("choices") or [{}])[0]
-                .get("message", {})
-                .get("content", "")
-            )
             groundedness, relevance, why_grounded, why_relevant, parse_error = (
                 parse_judgment(content)
             )
@@ -446,13 +522,36 @@ def run(
         )
     questions = load_dataset(config.dataset_path)
     dataset_bytes = config.dataset_path.read_bytes()
+    config.started_at = datetime.now(UTC).isoformat()
     budget = Budget(
         answer_attempt_cap=ANSWER_ATTEMPTS_PER_QUESTION * len(questions),
         judge_attempt_cap=JUDGE_ATTEMPTS_PER_QUESTION * len(questions),
+        deadline=time.monotonic() + config.max_duration_seconds,
     )
+    original_sleep = sleep
+
+    def bounded_sleep(seconds: float) -> None:
+        remaining = budget.remaining_timeout(seconds)
+        if remaining < seconds:
+            raise BudgetExceeded("evaluation deadline reached before backoff")
+        original_sleep(seconds)
+        budget.remaining_timeout(1)
+
+    sleep = bounded_sleep
     rows: list[dict[str, Any]] = []
     judge_model = ""
     for question in questions:
+        counters_before = {
+            key: getattr(budget, key)
+            for key in (
+                "answer_attempts",
+                "judge_attempts",
+                "judge_prompt_tokens",
+                "judge_completion_tokens",
+                "reserved_judge_tokens",
+            )
+        }
+        question_model = ""
         answer = ask_answer(transport, config.endpoint, question.query, budget, sleep)
         row: dict[str, Any] = {
             "query": question.query,
@@ -479,6 +578,9 @@ def run(
             )
             judgment = judge_answer(transport, config, api_key, prompt, budget, sleep)
             judgment_error = judgment.error
+            question_model = judgment.model
+            if judge_model and judgment.model != judge_model:
+                raise ProduceError("judge model changed during evaluation")
             if judgment.model and not judge_model:
                 judge_model = judgment.model
             row.update(
@@ -497,6 +599,10 @@ def run(
                 "judgment_error": judgment_error or None,
             }
         )
+        row["usage"] = {
+            key: getattr(budget, key) - value for key, value in counters_before.items()
+        }
+        row["usage"]["judge_model"] = question_model
         rows.append(row)
         write_document(
             document_so_far(
@@ -530,6 +636,33 @@ def run(
         "retrieval_hits": sum(1 for row in rows if row["retrieval_hit"]),
         "judged": sum(1 for row in rows if row.get("groundedness") is not None),
     }
+    if config.candidate is not None:
+        document["release_evidence"] = {
+            "run_id": config.run_id,
+            "started_at": config.started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "expires_at": (
+                datetime.fromisoformat(config.started_at)
+                + timedelta(seconds=config.expires_after_seconds)
+            ).isoformat(),
+            "candidate": config.candidate,
+            "prompt_sha256": hashlib.sha256(JUDGE_PROMPT_TEMPLATE.encode()).hexdigest(),
+            "budgets": {
+                "answer_attempts_per_question": ANSWER_ATTEMPTS_PER_QUESTION,
+                "judge_attempts_per_question": JUDGE_ATTEMPTS_PER_QUESTION,
+                "total_attempt_cap": budget.total_attempt_cap,
+                "answer_max_output_tokens": 256,
+                "answer_output_token_cap": budget.answer_output_token_cap,
+                "judge_max_output_tokens": JUDGE_MAX_OUTPUT_TOKENS,
+                "judge_input_byte_cap": 8000,
+                "judge_token_cap": budget.judge_token_cap,
+                "max_duration_seconds": config.max_duration_seconds,
+            },
+            "usage": {
+                "reserved_answer_output_tokens": budget.reserved_answer_output_tokens,
+                "reserved_judge_tokens": budget.reserved_judge_tokens,
+            },
+        }
     return document
 
 
@@ -594,18 +727,12 @@ def write_document(document: dict[str, Any], output_path: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Produce one live results document and gate it.
-
-    Exit 0 completed and passed the gate; 3 the run failed mid-flight
-    with the partial document kept; 4 nothing was answered and the
-    partial document is kept as evidence; 5 the completed document
-    failed the gate.
-    """
+    """Write and gate evidence: exit 0 pass, 3 partial, 4 empty, 5 quality failure."""
     parser = argparse.ArgumentParser(
         description=(
             "Run the golden question set through the deployed answer path, "
             "judge every answer with a bounded model call, and write one "
-            "results document. A deliberate manual run; never wired into CI."
+            "results document for a deliberate trusted staging run."
         )
     )
     parser.add_argument("--endpoint", required=True, help="answers endpoint URL")

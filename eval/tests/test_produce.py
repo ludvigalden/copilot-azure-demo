@@ -1,6 +1,7 @@
 """Hermetic tests for the evaluation producer."""
 
 import json
+from typing import Any
 
 import pytest
 
@@ -314,3 +315,361 @@ def test_main_exits_three_and_keeps_the_partial_document(tmp_path, monkeypatch):
         "no result row for this golden question" in failure
         for failure in verdict.failures
     )
+
+
+def release_fixture(tmp_path, monkeypatch):
+    import hashlib
+    from datetime import UTC, datetime
+
+    monkeypatch.setenv("EVAL_TEST_KEY", "fixture-not-a-credential")
+    candidate: dict[str, Any] = {field: "fixture" for field in gate.CANDIDATE_FIELDS}
+    for field in (
+        "source_commit",
+        "kb_tree",
+        "kb_source_commit",
+        "image_source_commit",
+    ):
+        candidate[field] = "a" * 40
+    for field in (
+        "index_snapshot_sha256",
+        "index_definition_sha256",
+        "answer_prompt_sha256",
+        "judge_prompt_sha256",
+        "dataset_sha256",
+    ):
+        candidate[field] = "b" * 64
+    candidate.update(
+        image="ghcr.io/o/r@sha256:" + "c" * 64,
+        revision="app--one",
+        index_name="kb",
+        document_count=15,
+        endpoint="https://staging.example/api/answers",
+        run_id="1:1",
+        components=["app", "kb"],
+        chat_deployment="chat",
+        embedding_deployment="embedding",
+        judge_host="judge.example",
+        judge_api_version="2024-10-21",
+        chat_model={
+            "name": "gpt-4.1-mini",
+            "version": "2025-04-14",
+            "format": "OpenAI",
+        },
+        embedding_model={
+            "name": "text-embedding-3-small",
+            "version": "1",
+            "format": "OpenAI",
+        },
+        dataset_sha256=hashlib.sha256(produce.DEFAULT_DATASET.read_bytes()).hexdigest(),
+        judge_prompt_sha256=hashlib.sha256(
+            produce.JUDGE_PROMPT_TEMPLATE.encode()
+        ).hexdigest(),
+    )
+    config = RunConfig(
+        endpoint=candidate["endpoint"],
+        answer_revision=candidate["revision"],
+        answer_image=candidate["image"],
+        judge_host=candidate["judge_host"],
+        judge_deployment="chat",
+        judge_api_version=candidate["judge_api_version"],
+        dataset_path=produce.DEFAULT_DATASET,
+        key_env="EVAL_TEST_KEY",
+        output_path=tmp_path / "evaluation.json",
+        candidate=candidate,
+        run_id="1:1",
+    )
+    responses = []
+    for question in produce.load_dataset(produce.DEFAULT_DATASET):
+        body = answer_body()
+        body["citations"][0]["url"] = (
+            "https://github.com/o/r/blob/"
+            + "a" * 40
+            + "/kb/"
+            + question.expected_article
+        )
+        responses.extend([(200, body), (200, judge_body())])
+    document = produce.run(config, FakeTransport(responses), lambda _: None)
+    return document, candidate, datetime.now(UTC)
+
+
+def test_all_golden_release_evidence_passes(tmp_path, monkeypatch):
+    document, candidate, now = release_fixture(tmp_path, monkeypatch)
+    verdict = gate.gate_release_document(document, candidate, now)
+    assert verdict.passed, verdict.failures
+    assert len(document["results"]) == 15
+
+
+@pytest.mark.parametrize("field", gate.CANDIDATE_FIELDS)
+def test_every_candidate_binding_fails_closed(tmp_path, monkeypatch, field):
+    from copy import deepcopy
+
+    document, candidate, now = release_fixture(tmp_path, monkeypatch)
+    changed = deepcopy(candidate)
+    changed[field] = None
+    assert not gate.gate_release_document(document, changed, now).passed
+
+
+@pytest.mark.parametrize("field", ["candidate", "budgets", "usage"])
+@pytest.mark.parametrize("value", [None, [], "malformed", 7])
+def test_nested_release_shapes_fail_closed(tmp_path, monkeypatch, field, value):
+    document, candidate, now = release_fixture(tmp_path, monkeypatch)
+    document["release_evidence"][field] = value
+    assert not gate.gate_release_document(document, candidate, now).passed
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "expired",
+        "future",
+        "partial",
+        "duplicate",
+        "negative",
+        "combined",
+        "row-attempts",
+        "deadline",
+        "recorded-deadline",
+    ],
+)
+def test_release_negative_controls(tmp_path, monkeypatch, mutation):
+    from datetime import timedelta
+
+    document, candidate, now = release_fixture(tmp_path, monkeypatch)
+    if mutation == "expired":
+        document["release_evidence"]["expires_at"] = (
+            now - timedelta(seconds=1)
+        ).isoformat()
+    elif mutation == "future":
+        document["release_evidence"]["completed_at"] = (
+            now + timedelta(seconds=1)
+        ).isoformat()
+    elif mutation == "partial":
+        document["results"].pop()
+    elif mutation == "duplicate":
+        document["results"][1] = document["results"][0]
+    elif mutation == "negative":
+        document["run"]["usage"]["judge_prompt_tokens"] = -1
+    elif mutation == "combined":
+        document["run"]["usage"].update(
+            judge_prompt_tokens=149999, judge_completion_tokens=100
+        )
+    elif mutation in ("deadline", "recorded-deadline"):
+        limit = 900 if mutation == "deadline" else 1
+        document["release_evidence"]["budgets"]["max_duration_seconds"] = limit
+        document["release_evidence"]["started_at"] = (
+            now - timedelta(seconds=limit + 1)
+        ).isoformat()
+        document["release_evidence"]["completed_at"] = now.isoformat()
+    else:
+        document["results"][0]["usage"]["judge_attempts"] = 7
+    assert not gate.gate_release_document(document, candidate, now).passed
+
+
+@pytest.mark.parametrize(
+    "payload", [None, [], "text", {"text": "ok", "citations": [None], "chunks": [None]}]
+)
+def test_malformed_success_response_rejected(payload):
+    transport = FakeTransport([(200, payload)])
+    with pytest.raises(ProduceError):
+        produce.ask_answer(
+            transport,
+            "https://fixture/api/answers",
+            "question",
+            Budget(4, 6),
+            lambda _: None,
+        )
+
+
+def test_release_recheck_captures_current_staging(tmp_path, monkeypatch):
+    import release
+
+    document, candidate, _ = release_fixture(tmp_path, monkeypatch)
+    candidate.update(staging_prefix="stage", shared_prefix="shared")
+    document["release_evidence"]["candidate"] = candidate
+    produce.write_document(document, tmp_path / "evaluation.json")
+    produce.write_document(candidate, tmp_path / "candidate.json")
+    monkeypatch.setenv("EVALUATION_RUN_ID", "1:1")
+    monkeypatch.setattr(release, "command", lambda *args: "a" * 40)
+    observed = []
+
+    def capture(components):
+        observed.append(components)
+        return candidate
+
+    monkeypatch.setattr(release, "capture", capture)
+    args = [
+        "--verify-only",
+        "--output",
+        str(tmp_path / "evaluation.json"),
+        "--candidate",
+        str(tmp_path / "candidate.json"),
+    ]
+    assert release.main(args) == 0
+    assert observed == [["app", "kb"]]
+    monkeypatch.setattr(
+        release, "capture", lambda components: {**candidate, "revision": "changed"}
+    )
+    assert release.main(args) == 1
+
+
+def test_capture_metadata_deadline_prevents_subprocess(monkeypatch):
+    import release
+
+    monkeypatch.setattr(release, "DEADLINE", 10.0)
+    monkeypatch.setattr(release.time, "monotonic", lambda: 11.0)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("expired metadata command reached subprocess")
+
+    monkeypatch.setattr(release.subprocess, "run", unexpected)
+    with pytest.raises(ProduceError, match="deadline"):
+        release.command("az", "fixture")
+
+
+def test_capture_metadata_errors_do_not_disclose_output(monkeypatch):
+    import subprocess
+
+    import release
+
+    monkeypatch.setattr(release, "DEADLINE", None)
+    monkeypatch.setattr(
+        release.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args, 1, "private-output", "private-error"
+        ),
+    )
+    with pytest.raises(ProduceError) as error:
+        release.command("az", "fixture")
+    assert "private" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        None,
+        [],
+        [None],
+        [{"id": "one"}],
+        [{"id": "one", "title": "title", "content": "content", "url": "url"}] * 2,
+    ],
+)
+def test_capture_rejects_malformed_or_duplicate_index_rows(rows):
+    import release
+
+    with pytest.raises(ProduceError):
+        release.normalized_rows(rows)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["none", "image", "revision", "source", "kb", "chunk", "vectorizer", "cap"],
+)
+def test_capture_binds_canned_deployment_and_exact_kb(monkeypatch, mutation):
+    import release
+
+    source = "a" * 40
+    image = "ghcr.io/o/r@sha256:" + "b" * 64
+    monkeypatch.setenv("NAME_PREFIX", "stage")
+    monkeypatch.setenv("SHARED_PREFIX", "shared")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("EVALUATION_RUN_ID", "1:1")
+    for name in ("INDEX_NAME", "CHAT_DEPLOYMENT_NAME", "EMBEDDING_DEPLOYMENT_NAME"):
+        monkeypatch.delenv(name, raising=False)
+    rows = [
+        {key: getattr(chunk, key) for key in ("id", "title", "content", "url")}
+        for chunk in release.chunk_kb(release.ROOT / "kb", "o/r", source)
+    ]
+    app: dict[str, Any] = {
+        "template": {
+            "containers": [
+                {
+                    "image": image,
+                    "env": [
+                        {
+                            "name": "Search__Endpoint",
+                            "value": "https://shared-srch.search.windows.net",
+                        },
+                        {
+                            "name": "OpenAI__Endpoint",
+                            "value": "https://shared-ai.cognitiveservices.azure.com",
+                        },
+                    ],
+                }
+            ]
+        },
+        "latestReadyRevisionName": "ready",
+        "latestRevisionName": "ready",
+        "configuration": {
+            "activeRevisionsMode": "Single",
+            "ingress": {"fqdn": "stage.example"},
+        },
+    }
+    labels = {
+        "org.opencontainers.image.source": "https://github.com/o/r",
+        "org.opencontainers.image.revision": source,
+    }
+    definition = {
+        "vectorSearch": {
+            "vectorizers": [
+                {
+                    "azureOpenAIParameters": {
+                        "deploymentId": "embedding",
+                        "resourceUri": "https://shared-ai.cognitiveservices.azure.com",
+                    }
+                }
+            ]
+        }
+    }
+    provider = "MaxOutputTokenCount = 256; new ChatCompletionOptions"
+    if mutation == "image":
+        app["template"]["containers"][0]["image"] = "mutable:tag"
+    elif mutation == "revision":
+        app["latestRevisionName"] = "unready"
+    elif mutation == "source":
+        labels["org.opencontainers.image.source"] = "https://github.com/other/repo"
+    elif mutation == "kb":
+        rows[0]["url"] = rows[0]["url"].replace(source, "main")
+    elif mutation == "chunk":
+        rows[0]["content"] += " changed"
+    elif mutation == "vectorizer":
+        definition["vectorSearch"]["vectorizers"][0]["azureOpenAIParameters"][
+            "deploymentId"
+        ] = "other"
+    elif mutation == "cap":
+        provider = "new ChatCompletionOptions"
+
+    def metadata(*args):
+        if args[:2] == ("git", "rev-parse"):
+            return source
+        if args[:2] == ("git", "show"):
+            return provider
+        if args[:2] == ("docker", "pull"):
+            return ""
+        if args[:3] == ("docker", "image", "inspect"):
+            return json.dumps(labels)
+        if args[:3] == ("az", "containerapp", "show"):
+            return json.dumps({"properties": app})
+        if args[:2] == ("az", "rest"):
+            url = args[args.index("--url") + 1]
+            return json.dumps({"value": rows} if "/docs?" in url else definition)
+        if args[:2] == ("az", "cognitiveservices"):
+            return json.dumps(
+                {
+                    "properties": {
+                        "model": {"name": "fixture", "version": "1", "format": "OpenAI"}
+                    }
+                }
+            )
+        pytest.fail(f"unexpected metadata command {args[0]}")
+
+    monkeypatch.setattr(release, "command", metadata)
+    if mutation == "none":
+        candidate = release.capture(["app", "kb"])
+        assert candidate["image"] == image
+        assert candidate["document_count"] == len(rows)
+        assert candidate["source_commit"] == source
+        assert candidate["kb_source_commit"] == source
+    else:
+        with pytest.raises(ProduceError):
+            release.capture(["app", "kb"])
