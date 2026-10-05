@@ -180,7 +180,9 @@ jobs:
     needs: terraform-staging
     if: (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && !github.event.act
     runs-on: ubuntu-latest
-    environment: demo
+    environment:
+      name: demo
+      url: https://${{ env.PUBLIC_HOSTNAME }}/
     permissions:
       contents: read
       id-token: write
@@ -210,6 +212,7 @@ jobs:
       TF_VAR_act_principal_object_id: ${{ vars.ACT_PRINCIPAL_OBJECT_ID }}
       TF_VAR_extra_redirect_uris: ${{ vars.EXTRA_REDIRECT_URIS || '[]' }}
       TF_VAR_public_hostname: ${{ secrets.PUBLIC_HOSTNAME || '' }}
+      PUBLIC_HOSTNAME: ${{ secrets.PUBLIC_HOSTNAME }}
     outputs:
       plan_hash: ${{ steps.plan.outputs.plan_hash }}
       plan_saved: ${{ steps.save.outputs.saved }}
@@ -233,7 +236,6 @@ jobs:
           : "${TFSTATE_RESOURCE_GROUP:?the demo environment must set TFSTATE_RESOURCE_GROUP}"
           : "${TFSTATE_STORAGE_ACCOUNT:?the demo environment must set TFSTATE_STORAGE_ACCOUNT}"
           : "${TF_VAR_prefix:?the demo environment must set NAME_PREFIX}"
-          : "${TF_VAR_shared_prefix:?the demo environment must set SHARED_PREFIX}"
           # An empty hostname drops the custom-domain resources from
           # the plan and would drift-destroy them at apply; refuse to
           # plan against production without it.

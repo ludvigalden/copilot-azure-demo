@@ -197,23 +197,25 @@ jobs:
     needs: [validate-kb, push-staging]
     if: github.event_name == 'schedule' && !github.event.act
     runs-on: ubuntu-latest
-    environment: demo
+    environment:
+      name: demo
+      url: https://${{ env.PUBLIC_HOSTNAME }}/
     permissions:
       contents: read
       id-token: write
+    env:
+      PUBLIC_HOSTNAME: ${{ secrets.PUBLIC_HOSTNAME }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Require the demo bindings
         env:
           NAME_PREFIX: ${{ vars.NAME_PREFIX }}
-          SHARED_PREFIX: ${{ vars.SHARED_PREFIX }}
           AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
         run: |
           : "${NAME_PREFIX:?the demo environment must set NAME_PREFIX}"
-          : "${SHARED_PREFIX:?the demo environment must set SHARED_PREFIX}"
           : "${AZURE_CLIENT_ID:?the demo environment must set AZURE_CLIENT_ID}"
           : "${AZURE_TENANT_ID:?the demo environment must set AZURE_TENANT_ID}"
           : "${AZURE_SUBSCRIPTION_ID:?the demo environment must set AZURE_SUBSCRIPTION_ID}"
@@ -225,17 +227,8 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Fill the production index
-        env:
-          NAME_PREFIX: ${{ vars.NAME_PREFIX }}
-          SHARED_PREFIX: ${{ vars.SHARED_PREFIX }}
-          INDEX_NAME: ${{ vars.INDEX_NAME }}
-          EMBEDDING_DEPLOYMENT_NAME: ${{ vars.EMBEDDING_DEPLOYMENT_NAME }}
         run: |
           uv run --project services/ingest ingest \
             --kb kb \
             --repo "$GITHUB_REPOSITORY" \
-            --prefix "${NAME_PREFIX}" \
-            --search-endpoint "https://${SHARED_PREFIX}-srch.search.windows.net" \
-            --openai-endpoint "https://${SHARED_PREFIX}-ai.cognitiveservices.azure.com/" \
-            --index-name "${INDEX_NAME:-kb}" \
-            --embedding-deployment "${EMBEDDING_DEPLOYMENT_NAME:-embedding}"
+            --prefix "${{ vars.NAME_PREFIX }}"
