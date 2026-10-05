@@ -1,17 +1,20 @@
 #!/bin/sh
 # Structural assertions on the Ingest workflow. Overlapping runs must
 # serialize through a workflow-level concurrency group without
-# cancellation, the publishing path must be the chain
-# validate -> push-staging -> push with no continue-on-error escape
-# hatch on it, and production must be gated on the staging job actually
-# succeeding: the prod job must need both prerequisites, its condition
-# must carry no status function that could run it past a failed
-# staging, it must keep the negated github.event.act term so a local
-# act run cannot reach production, and it must be false in every event
-# context where the staging job skips. GitHub enforces concurrency only
-# in the real runner, so this proves the workflow's shape, not its
-# runtime behavior. Hermetic: it reads the repository's own files and
-# touches no network and no cloud.
+# cancellation, the staging path must be the chain
+# validate-kb -> push-staging with no continue-on-error escape hatch on
+# it, the release surface must add the staging-check retrieval
+# verification behind push-staging, and production must be gated on the
+# staging job actually succeeding: the prod job must need both
+# prerequisites, its condition must carry no status function that could
+# run it past a failed staging, it must keep the negated
+# github.event.act term so a local act run cannot reach production, and
+# it must be false in every event context where the staging job skips.
+# The prod job runs on the weekly schedule only: the release path's
+# production write is release.yml's ingest-production job. GitHub
+# enforces concurrency only in the real runner, so this proves the
+# workflow's shape, not its runtime behavior. Hermetic: it reads the
+# repository's own files and touches no network and no cloud.
 set -eu
 
 cd "$(git rev-parse --show-toplevel)"
@@ -57,7 +60,7 @@ if isinstance(concurrency, dict):
     )
 
 jobs = doc.get("jobs") or {}
-for name in ("validate", "push-staging", "push"):
+for name in ("validate-kb", "push-staging", "staging-check", "push"):
     check(name in jobs, f"job '{name}' is missing")
 
 push = jobs.get("push") or {}
@@ -69,8 +72,8 @@ check(
     "the prod 'push' job does not need the staging job",
 )
 check(
-    "validate" in needs,
-    "the prod 'push' job does not need the validate job",
+    "validate-kb" in needs,
+    "the prod 'push' job does not need the validate-kb job",
 )
 
 staging = jobs.get("push-staging") or {}
@@ -78,10 +81,21 @@ staging_needs = staging.get("needs") or []
 if isinstance(staging_needs, str):
     staging_needs = [staging_needs]
 check(
-    "validate" in staging_needs,
-    "the staging job does not need the validate job",
+    "validate-kb" in staging_needs,
+    "the staging job does not need the validate-kb job",
 )
-for name in ("push-staging", "push"):
+
+staging_check = jobs.get("staging-check") or {}
+sc_needs = staging_check.get("needs") or []
+if isinstance(sc_needs, str):
+    sc_needs = [sc_needs]
+check(
+    "push-staging" in sc_needs,
+    "staging-check does not need the staging push, so the release "
+    "retrieval check could report on an index nothing filled",
+)
+
+for name in ("push-staging", "staging-check", "push"):
     job = jobs.get(name) or {}
     check(
         job.get("continue-on-error") is not True,
@@ -140,7 +154,7 @@ def evaluate(expr, event, act):
     return bool(eval(body, {"__builtins__": {}}, {}))
 
 
-for event in ("push", "pull_request", "schedule", "workflow_dispatch"):
+for event in ("push", "pull_request", "schedule", "workflow_dispatch", "workflow_call"):
     for act in (False, True):
         staging_runs = (
             True if staging_if is None else evaluate(staging_if, event, act)
@@ -168,8 +182,9 @@ if failures:
     for message in failures:
         print(f"FAIL: {message}", file=sys.stderr)
     raise SystemExit(1)
-print("ok: overlapping ingest runs serialize and production stays "
-      "behind a successful staging push")
+print("ok: overlapping ingest runs serialize, staging-check verifies "
+      "the retrieval, and production stays behind a successful "
+      "staging push")
 PY
 else
     # PyYAML is unavailable, so this falls back to textual assertions.
@@ -181,10 +196,10 @@ else
         || fail "concurrency group is not the static 'ingest' (grep fallback)"
     grep -q '^  cancel-in-progress: false$' "$workflow" \
         || fail "cancel-in-progress is not explicitly false (grep fallback)"
-    grep -q 'needs: \[validate, push-staging\]' "$workflow" \
-        || fail "the prod job does not need push-staging or validate (grep fallback)"
-    grep -q '^    needs: validate$' "$workflow" \
-        || fail "the staging job does not need validate (grep fallback)"
+    grep -q 'needs: \[validate-kb, push-staging\]' "$workflow" \
+        || fail "the prod job does not need push-staging or validate-kb (grep fallback)"
+    grep -q '^    needs: validate-kb$' "$workflow" \
+        || fail "the staging job does not need validate-kb (grep fallback)"
     if grep -q 'continue-on-error' "$workflow"; then
         fail "a publishing job carries continue-on-error (grep fallback)"
     fi
@@ -192,7 +207,9 @@ else
         fail "a status function appears in a job or step condition (grep fallback)"
     fi
     grep -q "github.event_name != 'pull_request'" "$workflow" \
-        || fail "the prod event gate is missing (grep fallback)"
+        || fail "the staging event gate is missing (grep fallback)"
+    grep -q "github.event_name == 'schedule'" "$workflow" \
+        || fail "the prod schedule gate is missing (grep fallback)"
     grep -q '!github.event.act' "$workflow" \
         || fail "the prod act gate is missing (grep fallback)"
     echo "ok: ingest workflow gates verified textually (PyYAML unavailable)"
