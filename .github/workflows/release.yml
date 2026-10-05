@@ -136,16 +136,71 @@ jobs:
   # approving production — the exact image digest, the knowledge-base
   # commit the retrieval check proved, the infrastructure plan hash,
   # and the solution version — as a machine-readable manifest and a
-  # run summary. Runs even when some components skip; a failed
-  # component still fails it.
+  # run summary. Runs when at least one release component is selected:
+  # a workflow-only push leaves nothing to summarize, so the run stays
+  # green as validation-only with no artifact. A failed component still
+  # fails it, and a selected component missing its evidence fails it
+  # closed before anything is written.
   release-summary:
-    needs: [validate, app-release, ingest-release, infra-release, pp-release]
-    if: always() && !failure() && !cancelled()
+    needs: [changes, validate, app-release, ingest-release, infra-release, pp-release]
+    if: >-
+      always() && !failure() && !cancelled() &&
+      needs.changes.result == 'success' &&
+      (needs.changes.outputs.app == 'true' ||
+       needs.changes.outputs.kb == 'true' ||
+       needs.changes.outputs.infra == 'true' ||
+       needs.changes.outputs.power_platform == 'true')
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v7
+
+      # Fail closed when a selected component reached the summary
+      # without its evidence. The production apply itself stays behind
+      # the demo environment's approval; here the recorded plan and its
+      # saved state are the infrastructure evidence.
+      - name: Assert the selected components carried their evidence
+        env:
+          APP_SELECTED: ${{ needs.changes.outputs.app }}
+          KB_SELECTED: ${{ needs.changes.outputs.kb }}
+          INFRA_SELECTED: ${{ needs.changes.outputs.infra }}
+          PP_SELECTED: ${{ needs.changes.outputs.power_platform }}
+          APP_DIGEST: ${{ needs.app-release.outputs.digest }}
+          STAGING_READINESS: ${{ needs.app-release.outputs.staging_readiness }}
+          STAGING_SMOKE: ${{ needs.app-release.outputs.staging_smoke }}
+          STAGING_E2E: ${{ needs.app-release.outputs.staging_e2e }}
+          KB_COMMIT: ${{ needs.ingest-release.outputs.kb_commit }}
+          DOC_COUNT: ${{ needs.ingest-release.outputs.doc_count }}
+          PLAN_HASH: ${{ needs.infra-release.outputs.plan_hash }}
+          PLAN_SAVED: ${{ needs.infra-release.outputs.plan_saved }}
+          SOLUTION_VERSION: ${{ needs.pp-release.outputs.solution_version }}
+          PP_STAGING_STATUS: ${{ needs.pp-release.outputs.staging_status }}
+        run: |
+          fail() {
+            echo "release gate: $1" >&2
+            exit 1
+          }
+          if [ "$APP_SELECTED" = "true" ]; then
+            [ -n "$APP_DIGEST" ] || fail "app selected but the release carries no image digest"
+            [ "$STAGING_READINESS" = "true" ] || fail "app selected but staging readiness was not recorded ready"
+            [ "$STAGING_SMOKE" = "pass" ] || fail "app selected but the staging smoke check did not pass"
+            [ "$STAGING_E2E" = "pass" ] || fail "app selected but the staging bot end-to-end check did not pass"
+          fi
+          if [ "$KB_SELECTED" = "true" ]; then
+            [ -n "$KB_COMMIT" ] || fail "knowledge base selected but its source commit was not recorded"
+            [ -n "$DOC_COUNT" ] || fail "knowledge base selected but its document count was not recorded"
+          fi
+          if [ "$INFRA_SELECTED" = "true" ]; then
+            [ -n "$PLAN_HASH" ] || fail "infrastructure selected but the plan hash was not recorded"
+            [ "$PLAN_SAVED" = "true" ] || fail "infrastructure selected but the saved plan was not recorded"
+          fi
+          if [ "$PP_SELECTED" = "true" ]; then
+            if [ -z "$SOLUTION_VERSION" ] && [ "$PP_STAGING_STATUS" != "not_configured" ]; then
+              fail "power platform selected but neither a solution version nor a not-configured marker was recorded"
+            fi
+          fi
+          echo "release gate: every selected component carried its release evidence"
 
       - name: Write the release identity
         env:
@@ -162,6 +217,11 @@ jobs:
           STAGING_READINESS: ${{ needs.app-release.outputs.staging_readiness }}
           STAGING_SMOKE: ${{ needs.app-release.outputs.staging_smoke }}
           STAGING_E2E: ${{ needs.app-release.outputs.staging_e2e }}
+          APP_SELECTED: ${{ needs.changes.outputs.app }}
+          KB_SELECTED: ${{ needs.changes.outputs.kb }}
+          INFRA_SELECTED: ${{ needs.changes.outputs.infra }}
+          PP_SELECTED: ${{ needs.changes.outputs.power_platform }}
+          PP_STAGING_STATUS: ${{ needs.pp-release.outputs.staging_status }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           image_value=""
@@ -182,6 +242,10 @@ jobs:
             --arg staging_smoke "$STAGING_SMOKE" \
             --arg staging_e2e "$STAGING_E2E" \
             --arg run_url "$RUN_URL" \
+            --arg app_selected "$APP_SELECTED" \
+            --arg kb_selected "$KB_SELECTED" \
+            --arg infra_selected "$INFRA_SELECTED" \
+            --arg pp_selected "$PP_SELECTED" \
             '{
               source_commit: $source_commit,
               image: (if $image == "" then null else $image end),
@@ -195,6 +259,21 @@ jobs:
                 readiness: (if $staging_readiness == "" then null else $staging_readiness end),
                 smoke: (if $staging_smoke == "" then null else $staging_smoke end),
                 bot_end_to_end: (if $staging_e2e == "" then null else $staging_e2e end)
+              },
+              selected_components: [
+                (if $app_selected == "true" then "app" else empty end),
+                (if $kb_selected == "true" then "kb" else empty end),
+                (if $infra_selected == "true" then "infra" else empty end),
+                (if $pp_selected == "true" then "power_platform" else empty end)
+              ],
+              component_status: {
+                app: (if $app_selected == "true" then "released" else "skipped_not_selected" end),
+                knowledge_base: (if $kb_selected == "true" then "released" else "skipped_not_selected" end),
+                infrastructure: (if $infra_selected == "true" then "released" else "skipped_not_selected" end),
+                power_platform: (
+                  if $pp_selected != "true" then "skipped_not_selected"
+                  elif $solution_version != "" then "released"
+                  else "skipped_not_configured" end)
               },
               run_url: $run_url
             }' > release-identity.json
@@ -221,6 +300,11 @@ jobs:
             fi
             echo "- Model deployments: chat ${CHAT_DEPLOYMENT_NAME:-chat}," \
               "embedding ${EMBEDDING_DEPLOYMENT_NAME:-embedding}"
+            echo "- Selected components: app $APP_SELECTED, kb $KB_SELECTED," \
+              "infra $INFRA_SELECTED, power_platform $PP_SELECTED"
+            if [ "$PP_SELECTED" = "true" ] && [ "$PP_STAGING_STATUS" = "not_configured" ]; then
+              echo "- Power Platform: no staging environment configured; import skipped"
+            fi
             if [ -n "$STAGING_E2E" ]; then
               echo "- Staging verification: readiness $STAGING_READINESS," \
                 "smoke $STAGING_SMOKE, bot end-to-end $STAGING_E2E"

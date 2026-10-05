@@ -10,6 +10,8 @@ on:
     outputs:
       solution_version:
         value: ${{ jobs.pack.outputs.solution_version }}
+      staging_status:
+        value: ${{ jobs.staging-import.outputs.status }}
   workflow_dispatch:
 
 permissions:
@@ -62,6 +64,8 @@ jobs:
   # verify against.
   staging-import:
     needs: pack
+    outputs:
+      status: ${{ steps.gate.outputs.status }}
     # Import never runs from a pull-request context: an untrusted
     # author must not reach the staging environment. workflow_call
     # keeps the caller's event, so a release push to main passes and
@@ -93,8 +97,10 @@ jobs:
         run: |
           if [ -n "$STAGING_URL" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "status=configured" >> "$GITHUB_OUTPUT"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "status=not_configured" >> "$GITHUB_OUTPUT"
             echo "No staging Power Platform environment is configured."
             echo "Set POWER_PLATFORM_STAGING_ENVIRONMENT_URL on the"
             echo "staging environment to enable the staging import."
