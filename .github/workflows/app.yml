@@ -210,6 +210,28 @@ jobs:
           curl --fail --silent --show-error "https://$fqdn/health" > /dev/null
           echo "smoke=pass" >> "$GITHUB_OUTPUT"
 
+      - name: Check every staged asset answers with its type
+        env:
+          NAME_PREFIX: ${{ vars.NAME_PREFIX }}
+        run: |
+          fqdn="$(az containerapp show \
+            --name "${NAME_PREFIX}-app" \
+            --resource-group "${NAME_PREFIX}-rg" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)"
+          node apps/web/scripts/check-assets.mts "https://$fqdn/"
+
+      - name: Prove the staged page renders its theme
+        env:
+          NAME_PREFIX: ${{ vars.NAME_PREFIX }}
+        run: |
+          fqdn="$(az containerapp show \
+            --name "${NAME_PREFIX}-app" \
+            --resource-group "${NAME_PREFIX}-rg" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)"
+          node apps/web/scripts/check-theme.mts "https://$fqdn/"
+
       - name: Prove the knowledge answer end to end
         id: e2e
         env:
