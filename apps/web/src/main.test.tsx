@@ -1,10 +1,7 @@
 // @vitest-environment jsdom
-// Bootstrap regression: however the /config branch resolves, exactly one
-// FluentProvider must sit above the rendered app, carrying the Fluent theme.
-// This drives the production entry point itself, not a test-only provider
-// tree. test-support must load before the app graph: openapi-fetch's
-// createClient captures the absolutizing Request and the recording fetch at
-// client creation (see test-support.ts).
+// Bootstrap regression: exactly one FluentProvider sits above the app on
+// every branch, driving the production entry point. test-support loads
+// first: createClient captures Request and the recording fetch.
 import "./test-support"
 import type { PublicClientApplication } from "@azure/msal-browser"
 import { webLightTheme } from "@fluentui/react-components"

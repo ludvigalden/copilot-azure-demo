@@ -1,10 +1,7 @@
-// The real-browser theme gate: loads the staged page in headless Chrome and
-// fails the release unless the rendered surface computes the Fluent theme's
-// custom properties on a real button, with no browser-default font left
-// behind. It speaks the DevTools protocol over Node's built-in WebSocket, so
-// CI needs no extra dependency to run a red gate, and a missing browser
-// fails loudly: the gate never reports green on absent tooling.
-// Run: node apps/web/scripts/check-theme.mts <base-url>
+// Fails the release unless the staged page, rendered in headless Chrome,
+// computes the Fluent theme's custom properties on a real button. Speaks
+// DevTools over Node's WebSocket; a missing browser fails loudly, never
+// green on absent tooling.
 import { execFileSync, spawn } from "node:child_process"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -91,12 +88,9 @@ function evaluate(socket: WebSocket, expression: string): Promise<Evaluated> {
       }
       if (message.id !== id) return
       socket.removeEventListener("message", onMessage)
-      // awaitPromise+returnByValue lands the settled value at
-      // result.result.value (RemoteObject.value); unwrap both levels so
-      // callers read .value as the probe object itself. A rejected probe
-      // promise reports through result.exceptionDetails (the top-level
-      // exceptionDetails stays unset), with value serialized as an empty
-      // object - so the rejection must be read before the value is used.
+      // awaitPromise+returnByValue puts the settled value at
+      // result.result.value; rejections report via result.exceptionDetails
+      // (top level stays unset, value {}), so read the rejection first.
       const remote = message.result?.result as { value?: unknown } | undefined
       if (message.error) reject(new Error(message.error.message))
       else
@@ -116,12 +110,9 @@ function evaluate(socket: WebSocket, expression: string): Promise<Evaluated> {
   })
 }
 
-/**
- * Runs inside the page: waits for the app surface to mount, then reads the
- * computed theme state off a real button and the provider root. Computed
- * styles are the point - inheritance and the cascade must resolve, which a
- * style-attribute or provider-presence check cannot prove.
- */
+/** Runs inside the page: waits for the app surface, then reads computed
+ * theme state off a real button and the provider root - inheritance and
+ * cascade must resolve, which a style-attribute check cannot prove. */
 const PROBE = `(() => new Promise((resolve, reject) => {
   const deadline = Date.now() + 45000
   const tick = () => {

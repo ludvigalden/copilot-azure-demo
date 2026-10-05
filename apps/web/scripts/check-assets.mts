@@ -1,11 +1,7 @@
-// The staged-assets gate: fetches the SPA index from a base URL, extracts
-// every src/href asset reference, and fails the release unless each one is
-// served with a 200 and the content type its extension promises. Built only
-// on Node's standard library, so CI needs no extra dependency to run a red
-// gate. The URL-extraction and content-type logic carries a unit test in
-// check-assets.test.ts; the network fetches run only where this script is
-// invoked directly.
-// Run: node apps/web/scripts/check-assets.mts <base-url>
+// The staged-assets gate: fails the release unless every src/href asset
+// in the SPA index serves 200 with the content type its extension
+// promises. Stdlib-only so CI needs no extra dependency; unit-tested in
+// check-assets.test.ts.
 import { pathToFileURL } from "node:url"
 
 /**
