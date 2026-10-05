@@ -44,9 +44,11 @@ technology it uses does a real job:
 | `Dockerfile` | The single container image: the SPA built and copied into the API image. |
 | `.dockerignore` | The image build context: only what the two build stages read. |
 | `.github/workflows/ci.yml` | The pull-request gate: contract regeneration drift check, lints and all test suites. |
-| `.github/workflows/app.yml` | Builds the container image into the GitHub Container Registry and updates the container app. |
-| `.github/workflows/infra.yml` | Plans the Terraform `main/` root on pull requests and applies it on pushes to `main`. |
-| `.github/workflows/ingest.yml` | Runs the knowledge-base ingester on a weekly schedule and on changes. |
+| `.github/workflows/release.yml` | The release coordinator: on pushes to `main` it validates everything through `ci.yml`, calls the component workflows for what changed, and runs the production legs behind the demo environment's approval. |
+| `.github/workflows/app.yml` | Builds the container image into the GitHub Container Registry and deploys it to the staging container app when the release coordinator calls it. |
+| `.github/workflows/infra.yml` | Plans the Terraform `main/` root on pull requests, applies staging when the release coordinator calls it, and saves the production plan for the approved apply. |
+| `.github/workflows/ingest.yml` | Runs the knowledge-base ingester on a weekly schedule and on changes; fills the staging index, with the production index filled on the weekly run. |
+| `.github/workflows/power-platform.yml` | Packs the unmanaged solution on pull requests and imports it to staging once the staging environment variable is configured. |
 | `scripts/` | Small operational entry points: the local workflow runner, the headless bot conversation proof, the Teams package build and publish. |
 | `docs/adr/` | Architecture decision records. |
 
@@ -148,28 +150,40 @@ identity, tickets account, bot). Staging applies before production in
 the same workflow runs, so every change answers for itself in staging
 first; its knowledge lives in its own index on the shared service.
 
-Five workflows in `.github/workflows/` run the pipeline:
+Six workflows in `.github/workflows/` run the pipeline. Five own one
+component each; `release.yml` coordinates them on pushes to `main`:
 
 - `ci.yml` regenerates the contract outputs and fails on drift, and
   runs the tests and lints of the API, the SPA and both Python
   projects; it gates every pull request.
 - `infra.yml` plans the `main/` root for both environments on pull
-  requests and applies staging first and production after it on
-  pushes to `main`, authenticating to Azure over OpenID Connect with
-  no stored cloud secrets.
+  requests, applies staging first when the release coordinator calls
+  it, and saves the production plan for the approved apply,
+  authenticating to Azure over OpenID Connect with no stored cloud
+  secrets.
 - `app.yml` builds the one container image and stores it in the
   GitHub Container Registry — images live with the repository, not
-  in a cloud registry — then points the staging container app at the
-  new image, and production's after staging is serving it.
+  in a cloud registry — then points the staging container app at
+  that image and verifies it there, when the release coordinator
+  calls it.
 - `ingest.yml` runs the knowledge-base ingester on a weekly schedule
-  and on every change to the articles or the ingester; staging's
-  index is filled first and production's after it.
+  and on every change to the articles or the ingester; the staging
+  index is filled first, the release coordinator checks retrieval
+  against it, and the weekly run fills the production index.
 - `power-platform.yml` packs the unmanaged solution from
   `apps/power-platform/` on every pull request, and — once the
-  environment variable is configured — imports and publishes it with
-  federated authentication and environment-variable values filled
-  from repository variables. The setup checklist is
+  staging environment variable is configured — imports and publishes
+  it to staging with federated authentication. The setup checklist is
   [docs/power-platform-setup.md](docs/power-platform-setup.md).
+- `release.yml` runs on every push to `main`: it detects which
+  components changed, validates everything through `ci.yml`, and
+  calls the component workflows for what changed. What the release
+  built — image digest, knowledge-base commit, plan hash, solution
+  version — is collected into a `release-identity` artifact, and the
+  production legs that follow sit behind the demo environment's
+  approval: the container app update to the verified digest, the
+  apply of the saved Terraform plan, the production index fill, and
+  the solution import with its API host resolved.
 
 The image itself is built by `Dockerfile`: the SPA is built first and
 copied into the API image, so one image serves both. Terraform
