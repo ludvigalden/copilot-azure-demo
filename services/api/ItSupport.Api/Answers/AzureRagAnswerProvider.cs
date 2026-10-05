@@ -30,6 +30,7 @@ public sealed class AzureRagAnswerProvider(
     public const string IndexName = "kb";
     public const string ChatDeploymentName = "chat";
     public const string SemanticConfigurationName = "kb-semantic";
+    public const int MaxOutputTokenCount = 256;
     private const int RetrievedChunks = 3;
     private const int VectorNeighbors = 5;
 
@@ -74,6 +75,7 @@ public sealed class AzureRagAnswerProvider(
                         """),
                     new UserChatMessage($"Sources:\n\n{sources}\n\nQuestion: {question}"),
                 ],
+                options: new ChatCompletionOptions { MaxOutputTokenCount = MaxOutputTokenCount },
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
