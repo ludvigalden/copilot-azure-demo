@@ -10,6 +10,10 @@ on:
     - cron: "23 4 * * 1"
   workflow_dispatch:
   workflow_call:
+    inputs:
+      release_candidate:
+        type: boolean
+        default: false
     outputs:
       kb_commit:
         value: ${{ jobs.staging-check.outputs.kb_commit }}
@@ -22,11 +26,8 @@ permissions:
   contents: read
 
 concurrency:
-  # Ingestion converges an index over many batches; a second run racing
-  # the first can interleave documents mid-merge. Overlapping runs
-  # therefore queue instead of cancelling: a cancelled run can leave the
-  # index half converged, and a half-converged index is worse than a
-  # late one.
+  # Active ingestion is not cancelled. GitHub replaces a pending run;
+  # this is serialization, not a durable queue of every request.
   group: ingest
   cancel-in-progress: false
 
@@ -46,6 +47,7 @@ jobs:
           uv run --project services/ingest ingest \
             --kb kb \
             --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_SHA" \
             --dry-run
 
   # Staging is filled before production in every path that writes at
@@ -53,7 +55,9 @@ jobs:
   # run stays a pure validation.
   push-staging:
     needs: validate-kb
-    if: github.event_name != 'pull_request'
+    if: >-
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (inputs.release_candidate ||
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     environment: staging
     permissions:
@@ -104,6 +108,13 @@ jobs:
             --password "$ARM_CLIENT_SECRET" \
             --tenant "$ARM_TENANT_ID" >/dev/null
 
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: 3.13
+
+      - name: Sync the locked ingestion tool
+        run: uv sync --locked --project services/ingest
+
       - name: Fill the staging index
         env:
           SHARED_PREFIX: ${{ vars.SHARED_PREFIX }}
@@ -113,6 +124,7 @@ jobs:
           uv run --project services/ingest ingest \
             --kb kb \
             --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_SHA" \
             --search-endpoint "https://${SHARED_PREFIX}-srch.search.windows.net" \
             --openai-endpoint "https://${SHARED_PREFIX}-ai.cognitiveservices.azure.com/" \
             --index-name "${INDEX_NAME:-kb}" \
@@ -123,7 +135,9 @@ jobs:
   # produced them. This is the evidence the release summary reports.
   staging-check:
     needs: push-staging
-    if: github.event_name == 'workflow_call'
+    if: >-
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (inputs.release_candidate ||
+      github.event_name == 'schedule') && !github.event.act
     runs-on: ubuntu-latest
     environment: staging
     permissions:
@@ -184,18 +198,55 @@ jobs:
       - name: Record which knowledge-base commit is active
         id: kb
         run: |
-          commit="$(git log -1 --format=%h -- kb/)"
+          commit="$GITHUB_SHA"
           : "${commit:?no knowledge-base commit recorded}"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
+  scheduled-eval:
+    needs: staging-check
+    if: github.event_name == 'schedule' && github.ref == 'refs/heads/main' && !github.event.act
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NAME_PREFIX: ${{ vars.NAME_PREFIX }}
+      SHARED_PREFIX: ${{ vars.SHARED_PREFIX }}
+      INDEX_NAME: ${{ vars.INDEX_NAME || 'kb' }}
+      CHAT_DEPLOYMENT_NAME: ${{ vars.CHAT_DEPLOYMENT_NAME || 'chat' }}
+      EMBEDDING_DEPLOYMENT_NAME: ${{ vars.EMBEDDING_DEPLOYMENT_NAME || 'embedding' }}
+      SHARED_AI_ACCOUNT_KEY: ${{ secrets.SHARED_AI_ACCOUNT_KEY }}
+      EVALUATION_RUN_ID: ${{ github.run_id }}:${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: 3.13
+      - run: uv sync --locked --project services/ingest
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Evaluate all golden questions against staging
+        run: |
+          uv run --project services/ingest python eval/release.py --components kb \
+            --candidate evidence/candidate.json --output evidence/evaluation.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scheduled-evaluation
+          path: evidence/*.json
+          if-no-files-found: error
+          retention-days: 1
+
   # Production ingestion stays a scheduled operation in this workflow.
-  # The release path's production write is release.yml's
-  # ingest-production job: the same command, under the demo
-  # environment's approval gate, serialized through the same
-  # concurrency group. A manual workflow_dispatch fills staging only.
   push:
-    needs: [validate-kb, push-staging]
-    if: github.event_name == 'schedule' && !github.event.act
+    needs: [validate-kb, push-staging, scheduled-eval]
+    if: github.event_name == 'schedule' && github.ref == 'refs/heads/main' && !github.event.act
     runs-on: ubuntu-latest
     environment:
       name: demo
@@ -207,6 +258,8 @@ jobs:
       PUBLIC_HOSTNAME: ${{ secrets.PUBLIC_HOSTNAME }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Require the demo bindings
         env:
@@ -226,9 +279,29 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: 3.13
+
+      - name: Sync the locked ingestion tool
+        run: uv sync --locked --project services/ingest
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: scheduled-evaluation
+          path: evidence
+
+      - name: Recheck approved evaluation freshness
+        env:
+          EVALUATION_RUN_ID: ${{ github.run_id }}:${{ github.run_attempt }}
+        run: |
+          uv run --project services/ingest python eval/release.py --verify-only \
+            --components kb --candidate evidence/candidate.json --output evidence/evaluation.json
+
       - name: Fill the production index
         run: |
           uv run --project services/ingest ingest \
             --kb kb \
             --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_SHA" \
             --prefix "${{ vars.NAME_PREFIX }}"

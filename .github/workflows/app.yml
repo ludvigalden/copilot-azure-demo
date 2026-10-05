@@ -22,6 +22,10 @@ on:
         value: ${{ jobs.verify-staging.outputs.smoke }}
       staging_e2e:
         value: ${{ jobs.verify-staging.outputs.e2e }}
+      staging_assets:
+        value: ${{ jobs.verify-staging.outputs.assets }}
+      staging_theme:
+        value: ${{ jobs.verify-staging.outputs.theme }}
 
 permissions:
   contents: read
@@ -82,6 +86,9 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -129,7 +136,7 @@ jobs:
           az containerapp update \
             --name "${NAME_PREFIX}-app" \
             --resource-group "${NAME_PREFIX}-rg" \
-            --image "ghcr.io/${{ github.repository }}@sha256:${{ needs.build-publish.outputs.digest }}"
+            --image "ghcr.io/${{ github.repository }}@${{ needs.build-publish.outputs.digest }}"
 
   # The staging verification window: readiness, an HTTP smoke of the
   # public surface, and the headless bot conversation whose citation
@@ -148,6 +155,8 @@ jobs:
       readiness: ${{ steps.readiness.outputs.ready }}
       smoke: ${{ steps.smoke.outputs.smoke }}
       e2e: ${{ steps.e2e.outputs.e2e }}
+      assets: ${{ steps.assets.outputs.assets }}
+      theme: ${{ steps.theme.outputs.theme }}
     steps:
       - uses: actions/checkout@v7
 
@@ -210,7 +219,12 @@ jobs:
           curl --fail --silent --show-error "https://$fqdn/health" > /dev/null
           echo "smoke=pass" >> "$GITHUB_OUTPUT"
 
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
       - name: Check every staged asset answers with its type
+        id: assets
         env:
           NAME_PREFIX: ${{ vars.NAME_PREFIX }}
         run: |
@@ -220,8 +234,10 @@ jobs:
             --query properties.configuration.ingress.fqdn \
             --output tsv)"
           node apps/web/scripts/check-assets.mts "https://$fqdn/"
+          echo "assets=pass" >> "$GITHUB_OUTPUT"
 
       - name: Prove the staged page renders its theme
+        id: theme
         env:
           NAME_PREFIX: ${{ vars.NAME_PREFIX }}
         run: |
@@ -231,6 +247,7 @@ jobs:
             --query properties.configuration.ingress.fqdn \
             --output tsv)"
           node apps/web/scripts/check-theme.mts "https://$fqdn/"
+          echo "theme=pass" >> "$GITHUB_OUTPUT"
 
       - name: Prove the knowledge answer end to end
         id: e2e

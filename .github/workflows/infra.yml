@@ -6,6 +6,10 @@ on:
       - "infra/terraform/main/**"
       - ".github/workflows/infra.yml"
   workflow_call:
+    inputs:
+      release_candidate:
+        type: boolean
+        default: false
     outputs:
       plan_hash:
         value: ${{ jobs.terraform-demo.outputs.plan_hash }}
@@ -44,13 +48,13 @@ jobs:
       - name: Validate
         run: terraform validate
 
-  # Staging plans and applies first: the same configuration proves
-  # itself against its own resource group and state key before
-  # production is planned at all. The release coordinator calls this
-  # workflow; a manual dispatch replans as maintenance and stops at
-  # the plan.
+  # Staging plans and applies first: the same configuration proves itself
+  # against its own resource group and state key before production is planned at
+  # all.
   terraform-staging:
-    if: github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (inputs.release_candidate ||
+      github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     environment: staging
     permissions:
@@ -168,17 +172,19 @@ jobs:
       # Only the release coordinator applies staging; a pull request
       # never reaches this job, and a local run stops at the plan.
       - name: Apply
-        if: github.event_name == 'workflow_call' && env.ACT != 'true'
+        if: >-
+          inputs.release_candidate && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
+          env.ACT != 'true'
         run: terraform apply -input=false -auto-approve tfplan
 
-  # Production is planned by a trusted job and applied later by the
-  # release coordinator from the saved plan — never from a plan
-  # re-computed at apply time. Planning reads production bindings, so
-  # this job already sits behind the demo environment's approval; the
-  # release adds its own gate in front of the apply.
+  # Production is planned by a trusted job and applied later by the release
+  # coordinator from the saved plan — never from a plan re-computed at apply
+  # time.
   terraform-demo:
     needs: terraform-staging
-    if: (github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && !github.event.act
+    if: >-
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (inputs.release_candidate ||
+      github.event_name == 'workflow_dispatch') && !github.event.act
     runs-on: ubuntu-latest
     environment:
       name: demo
@@ -275,16 +281,14 @@ jobs:
           plan_hash="$(sha256sum tfplan | cut -d' ' -f1)"
           echo "plan_hash=$plan_hash" >> "$GITHUB_OUTPUT"
 
-      # The plan is saved into the same private storage account the
-      # state already lives in — not into a workflow artifact, which a
-      # public repository exposes anonymously and a plan file can
-      # carry cleartext. The runner's OIDC identity already holds
-      # Storage Blob Data Contributor on this container; storage
-      # encrypts at rest; the fixed blob name lets the next release
-      # replace a stale plan.
+      # The plan is saved into the same private storage account the state
+      # already lives in — not into a workflow artifact, which a public
+      # repository exposes anonymously and a plan file can carry cleartext.
       - name: Save the plan for the approved apply
         id: save
-        if: github.event_name == 'workflow_call'
+        if: >-
+          inputs.release_candidate && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
+          !github.event.act
         run: |
           az storage blob upload \
             --auth-mode login \

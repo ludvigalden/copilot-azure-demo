@@ -17,6 +17,7 @@ on:
       - "infra/terraform/main/**"
       - "apps/power-platform/**"
       - ".github/workflows/**"
+      - "eval/**"
   workflow_dispatch:
     inputs:
       release_app:
@@ -44,6 +45,7 @@ jobs:
       app: ${{ steps.filter.outputs.app }}
       kb: ${{ steps.filter.outputs.kb }}
       infra: ${{ steps.filter.outputs.infra }}
+      evaluation: ${{ steps.filter.outputs.evaluation }}
       power_platform: ${{ steps.filter.outputs.power_platform }}
     steps:
       - name: Refuse intentional releases off main
@@ -77,6 +79,7 @@ jobs:
           kb_changed=false
           infra_changed=false
           pp_changed=false
+          evaluation_changed=false
           while IFS= read -r path; do
             [ -z "$path" ] && continue
             case "$path" in
@@ -84,6 +87,8 @@ jobs:
                 app_changed=true ;;
               dotnet-tools.json|ItSupport.slnx)
                 app_changed=true ;;
+              eval/*)
+                evaluation_changed=true ;;
               kb/*|services/ingest/*)
                 kb_changed=true ;;
               infra/terraform/main/*)
@@ -107,6 +112,7 @@ jobs:
             echo "kb=$kb_changed"
             echo "infra=$infra_changed"
             echo "power_platform=$pp_changed"
+            echo "evaluation=$evaluation_changed"
           } >> "$GITHUB_OUTPUT"
 
   # The same CI that guards pull requests guards the release tip.
@@ -116,7 +122,7 @@ jobs:
 
   app-release:
     needs: [changes, validate]
-    if: needs.changes.outputs.app == 'true'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.changes.outputs.app == 'true'
     uses: ./.github/workflows/app.yml
     permissions:
       contents: read
@@ -126,8 +132,10 @@ jobs:
 
   ingest-release:
     needs: [changes, validate]
-    if: needs.changes.outputs.kb == 'true'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.changes.outputs.kb == 'true'
     uses: ./.github/workflows/ingest.yml
+    with:
+      release_candidate: true
     permissions:
       contents: read
       id-token: write
@@ -135,8 +143,10 @@ jobs:
 
   infra-release:
     needs: [changes, validate]
-    if: needs.changes.outputs.infra == 'true'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.changes.outputs.infra == 'true'
     uses: ./.github/workflows/infra.yml
+    with:
+      release_candidate: true
     permissions:
       contents: read
       id-token: write
@@ -144,41 +154,91 @@ jobs:
 
   pp-release:
     needs: [changes, validate]
-    if: needs.changes.outputs.power_platform == 'true'
+    if: >-
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
+      needs.changes.outputs.power_platform == 'true'
     uses: ./.github/workflows/power-platform.yml
     permissions:
       contents: read
       id-token: write
     secrets: inherit
 
-  # The release identity: everything the reviewer should see before
-  # approving production — the exact image digest, the knowledge-base
-  # commit the retrieval check proved, the infrastructure plan hash,
-  # and the solution version — as a machine-readable manifest and a
-  # run summary. Runs when at least one release component is selected:
-  # a workflow-only push leaves nothing to summarize, so the run stays
-  # green as validation-only with no artifact. A failed component still
-  # fails it, and a selected component missing its evidence fails it
-  # closed before anything is written.
-  release-summary:
+  release-eval:
     needs: [changes, validate, app-release, ingest-release, infra-release, pp-release]
     if: >-
       always() && !failure() && !cancelled() &&
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && !github.event.act &&
+      needs.validate.result == 'success' &&
+      (needs.changes.outputs.app == 'true' || needs.changes.outputs.kb == 'true' ||
+       needs.changes.outputs.evaluation == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      passed: ${{ steps.evaluate.outputs.passed }}
+    env:
+      NAME_PREFIX: ${{ vars.NAME_PREFIX }}
+      SHARED_PREFIX: ${{ vars.SHARED_PREFIX }}
+      INDEX_NAME: ${{ vars.INDEX_NAME || 'kb' }}
+      CHAT_DEPLOYMENT_NAME: ${{ vars.CHAT_DEPLOYMENT_NAME || 'chat' }}
+      EMBEDDING_DEPLOYMENT_NAME: ${{ vars.EMBEDDING_DEPLOYMENT_NAME || 'embedding' }}
+      SHARED_AI_ACCOUNT_KEY: ${{ secrets.SHARED_AI_ACCOUNT_KEY }}
+      EVALUATION_RUN_ID: ${{ github.run_id }}:${{ github.run_attempt }}
+      EXPECTED_APP_DIGEST: ${{ needs.app-release.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: 3.13
+      - run: uv sync --locked --project services/ingest
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Evaluate the staging candidate
+        id: evaluate
+        env:
+          APP_SELECTED: ${{ needs.changes.outputs.app }}
+          KB_SELECTED: ${{ needs.changes.outputs.kb }}
+        run: |
+          components=""
+          [ "$APP_SELECTED" != true ] || components="app"
+          [ "$KB_SELECTED" != true ] || components="$components kb"
+          uv run --project services/ingest python eval/release.py --components $components \
+            --candidate evidence/candidate.json --output evidence/evaluation.json
+          echo "passed=true" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-evaluation
+          path: evidence/*.json
+          if-no-files-found: error
+          retention-days: 1
+
+  # Approval names the exact image, KB source, saved plan and staging proofs.
+  release-summary:
+    needs: [changes, validate, app-release, ingest-release, infra-release, pp-release, release-eval]
+    if: >-
+      always() && !failure() && !cancelled() &&
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && !github.event.act &&
       needs.changes.result == 'success' &&
       (needs.changes.outputs.app == 'true' ||
        needs.changes.outputs.kb == 'true' ||
        needs.changes.outputs.infra == 'true' ||
-       needs.changes.outputs.power_platform == 'true')
+       needs.changes.outputs.power_platform == 'true' ||
+       needs.changes.outputs.evaluation == 'true')
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v7
 
-      # Fail closed when a selected component reached the summary
-      # without its evidence. The production apply itself stays behind
-      # the demo environment's approval; here the recorded plan and its
-      # saved state are the infrastructure evidence.
+      # Missing selected evidence blocks approval; production mutation remains protected.
       - name: Assert the selected components carried their evidence
         env:
           APP_SELECTED: ${{ needs.changes.outputs.app }}
@@ -189,6 +249,10 @@ jobs:
           STAGING_READINESS: ${{ needs.app-release.outputs.staging_readiness }}
           STAGING_SMOKE: ${{ needs.app-release.outputs.staging_smoke }}
           STAGING_E2E: ${{ needs.app-release.outputs.staging_e2e }}
+          STAGING_ASSETS: ${{ needs.app-release.outputs.staging_assets }}
+          STAGING_THEME: ${{ needs.app-release.outputs.staging_theme }}
+          EVAL_PASSED: ${{ needs.release-eval.outputs.passed }}
+          EVAL_SELECTED: ${{ needs.changes.outputs.evaluation }}
           KB_COMMIT: ${{ needs.ingest-release.outputs.kb_commit }}
           DOC_COUNT: ${{ needs.ingest-release.outputs.doc_count }}
           PLAN_HASH: ${{ needs.infra-release.outputs.plan_hash }}
@@ -206,12 +270,23 @@ jobs:
             [ "$STAGING_SMOKE" = "pass" ] || fail "app selected but the staging smoke check did not pass"
             [ "$STAGING_E2E" = "pass" ] || fail "app selected but the staging bot end-to-end check did not pass"
           fi
+          if [ "$APP_SELECTED" = "true" ]; then
+            [ "$STAGING_ASSETS" = "pass" ] || fail "asset MIME proof missing"
+            [ "$STAGING_THEME" = "pass" ] || fail "browser theme proof missing"
+            printf '%s' "$APP_DIGEST" | grep -Eq '^sha256:[a-f0-9]{64}$' || fail "malformed image digest"
+          fi
+          if [ "$APP_SELECTED" = "true" ] || [ "$KB_SELECTED" = "true" ] || [ "$EVAL_SELECTED" = "true" ]; then
+            [ "$EVAL_PASSED" = "true" ] || fail "fresh retrieval and AI evidence missing"
+          fi
           if [ "$KB_SELECTED" = "true" ]; then
             [ -n "$KB_COMMIT" ] || fail "knowledge base selected but its source commit was not recorded"
             [ -n "$DOC_COUNT" ] || fail "knowledge base selected but its document count was not recorded"
+            printf '%s' "$KB_COMMIT" | grep -Eq '^[a-f0-9]{40}$' || fail "malformed KB source"
+            printf '%s' "$DOC_COUNT" | grep -Eq '^[1-9][0-9]*$' || fail "invalid document count"
           fi
           if [ "$INFRA_SELECTED" = "true" ]; then
             [ -n "$PLAN_HASH" ] || fail "infrastructure selected but the plan hash was not recorded"
+            printf '%s' "$PLAN_HASH" | grep -Eq '^[a-f0-9]{64}$' || fail "malformed plan hash"
             [ "$PLAN_SAVED" = "true" ] || fail "infrastructure selected but the saved plan was not recorded"
           fi
           if [ "$PP_SELECTED" = "true" ]; then
@@ -220,6 +295,12 @@ jobs:
             fi
           fi
           echo "release gate: every selected component carried its release evidence"
+
+      - uses: actions/download-artifact@v4
+        if: needs.release-eval.result == 'success'
+        with:
+          name: release-evaluation
+          path: evidence
 
       - name: Write the release identity
         env:
@@ -236,6 +317,10 @@ jobs:
           STAGING_READINESS: ${{ needs.app-release.outputs.staging_readiness }}
           STAGING_SMOKE: ${{ needs.app-release.outputs.staging_smoke }}
           STAGING_E2E: ${{ needs.app-release.outputs.staging_e2e }}
+          STAGING_ASSETS: ${{ needs.app-release.outputs.staging_assets }}
+          STAGING_THEME: ${{ needs.app-release.outputs.staging_theme }}
+          EVAL_PASSED: ${{ needs.release-eval.outputs.passed }}
+          EVAL_SELECTED: ${{ needs.changes.outputs.evaluation }}
           APP_SELECTED: ${{ needs.changes.outputs.app }}
           KB_SELECTED: ${{ needs.changes.outputs.kb }}
           INFRA_SELECTED: ${{ needs.changes.outputs.infra }}
@@ -247,9 +332,19 @@ jobs:
         run: |
           image_value=""
           if [ -n "$APP_DIGEST" ]; then
-            image_value="${IMAGE_REPO}@sha256:${APP_DIGEST}"
+            image_value="${IMAGE_REPO}@${APP_DIGEST}"
+          fi
+          evaluation='null'
+          if [ "$EVAL_PASSED" = true ]; then
+            evaluation="$(jq -c '{
+              candidate: .release_evidence.candidate,
+              started_at: .release_evidence.started_at, completed_at: .release_evidence.completed_at,
+              expires_at: .release_evidence.expires_at, budgets: .release_evidence.budgets,
+              usage: .run.usage, reservations: .release_evidence.usage, gate: .gate
+            }' evidence/evaluation.json)"
           fi
           jq -n \
+            --argjson evaluation "$evaluation" \
             --arg source_commit "$SOURCE_COMMIT" \
             --arg image "$image_value" \
             --arg kb_commit "$KB_COMMIT" \
@@ -262,6 +357,8 @@ jobs:
             --arg staging_readiness "$STAGING_READINESS" \
             --arg staging_smoke "$STAGING_SMOKE" \
             --arg staging_e2e "$STAGING_E2E" \
+            --arg staging_assets "$STAGING_ASSETS" \
+            --arg staging_theme "$STAGING_THEME" \
             --arg run_url "$RUN_URL" \
             --arg trigger "$TRIGGER" \
             --arg release_app_selected "$RELEASE_APP_SELECTED" \
@@ -278,24 +375,39 @@ jobs:
               infrastructure_plan_sha256: (if $infra_plan_sha256 == "" then null else $infra_plan_sha256 end),
               power_platform_solution_version: (if $solution_version == "" then null else $solution_version end),
               model_deployments: {chat: $chat_deployment, embedding: $embedding_deployment},
+              evaluation: $evaluation,
+              proof_pointer: ($run_url + "#artifacts"),
+              unavailable_proofs: [
+                (if $app_selected != "true" then "app build/readiness/assets/theme/bot: not selected" else empty end),
+                (if $evaluation == null then "retrieval/AI: answer path not selected" else empty end),
+                (if $infra_selected != "true" then "infrastructure plan: not selected" else empty end),
+                (if $pp_selected != "true" then "Power Platform: not selected"
+                 elif $solution_version == "" then "Power Platform import: staging binding unavailable"
+                 else empty end),
+                "locally built staging image: CI owns deployment; see docs/local-loop.md",
+                "delegated Graph/OBO: separate manual proof remains unverified"
+              ],
               staging_verification: {
                 readiness: (if $staging_readiness == "" then null else $staging_readiness end),
                 smoke: (if $staging_smoke == "" then null else $staging_smoke end),
+                asset_mime: (if $staging_assets == "" then null else $staging_assets end),
+                browser_theme: (if $staging_theme == "" then null else $staging_theme end),
                 bot_end_to_end: (if $staging_e2e == "" then null else $staging_e2e end)
               },
               selected_components: [
                 (if $app_selected == "true" then "app" else empty end),
                 (if $kb_selected == "true" then "kb" else empty end),
                 (if $infra_selected == "true" then "infra" else empty end),
-                (if $pp_selected == "true" then "power_platform" else empty end)
+                (if $pp_selected == "true" then "power_platform" else empty end),
+                (if $evaluation != null then "evaluation" else empty end)
               ],
               component_status: {
-                app: (if $app_selected == "true" then "released" else "skipped_not_selected" end),
-                knowledge_base: (if $kb_selected == "true" then "released" else "skipped_not_selected" end),
-                infrastructure: (if $infra_selected == "true" then "released" else "skipped_not_selected" end),
+                app: (if $app_selected == "true" then "awaiting_approval" else "skipped_not_selected" end),
+                knowledge_base: (if $kb_selected == "true" then "awaiting_approval" else "skipped_not_selected" end),
+                infrastructure: (if $infra_selected == "true" then "awaiting_approval" else "skipped_not_selected" end),
                 power_platform: (
                   if $pp_selected != "true" then "skipped_not_selected"
-                  elif $solution_version != "" then "released"
+                  elif $solution_version != "" then "awaiting_approval"
                   else "skipped_not_configured" end)
               },
               trigger: $trigger,
@@ -305,7 +417,23 @@ jobs:
           cat release-identity.json
 
           {
-            echo "## Release identity"
+            echo "## Release identity — awaiting approval"
+            echo "Proofs and unavailable checks (machine-readable artifact: release-identity):"
+            jq -r '.staging_verification | to_entries[] |
+              "- \(.key): \(.value // "unavailable: not selected")"' release-identity.json
+            jq -r '.unavailable_proofs[] | "- Unavailable: \(.)"' release-identity.json
+            if [ "$EVAL_PASSED" = true ]; then
+              jq -r '
+                "- Retrieval and AI: all 15 passed; dataset \(.candidate.dataset_sha256); run \(.candidate.run_id)",
+                "- Evidence expires: \(.expires_at)",
+                "- Candidate: image \(.candidate.image); revision \(.candidate.revision)",
+                "- KB \(.candidate.kb_source_commit); index snapshot \(.candidate.index_snapshot_sha256)",
+                "- Models and prompts: \(.candidate.chat_model | tojson)",
+                "- Answer prompt: \(.candidate.answer_prompt_sha256)",
+                "- Judge prompt: \(.candidate.judge_prompt_sha256)"' <<EOF
+          $evaluation
+          EOF
+            fi
             echo ""
             echo "- Source commit: $SOURCE_COMMIT"
             if [ -n "$image_value" ]; then
@@ -343,8 +471,7 @@ jobs:
             echo "Production legs below run only after the demo environment's required reviewer approves;" \
               "the reviewer sees this summary first."
             echo ""
-            echo "Honest limits: the AI evaluation suite is not part of the release path" \
-              "- retrieval is proven by the staging citation check." \
+            echo "Selected answer-path changes require all 15 retrieval and AI quality proofs." \
               "Staging images are built by CI; a locally built staging image" \
               "remains an open gap documented in docs/local-loop.md."
           } >> "$GITHUB_STEP_SUMMARY"
@@ -352,7 +479,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-identity
-          path: release-identity.json
+          path: |
+            release-identity.json
+            evidence/*.json
           if-no-files-found: error
 
   # Production receives exactly the digest staging verified. The job
@@ -360,7 +489,9 @@ jobs:
   # the release identity above.
   deploy-production:
     needs: [release-summary, app-release]
-    if: needs.release-summary.result == 'success' && needs.app-release.result == 'success' && !github.event.act
+    if: >-
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.release-summary.result ==
+      'success' && needs.app-release.result == 'success' && !github.event.act
     runs-on: ubuntu-latest
     environment:
       name: demo
@@ -375,6 +506,8 @@ jobs:
       PUBLIC_HOSTNAME: ${{ secrets.PUBLIC_HOSTNAME }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Require the demo bindings
         env:
@@ -394,6 +527,22 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-evaluation
+          path: evidence
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: 3.13
+      - name: Recheck approved evaluation freshness
+        env:
+          EVALUATION_RUN_ID: ${{ github.run_id }}:${{ github.run_attempt }}
+          EXPECTED_APP_DIGEST: ${{ needs.app-release.outputs.digest }}
+        run: |
+          uv sync --locked --project services/ingest
+          uv run --project services/ingest python eval/release.py --verify-only \
+            --candidate evidence/candidate.json --output evidence/evaluation.json
+
       - name: Point the production container app at the approved digest
         env:
           NAME_PREFIX: ${{ vars.NAME_PREFIX }}
@@ -403,7 +552,7 @@ jobs:
           az containerapp update \
             --name "${NAME_PREFIX}-app" \
             --resource-group "${NAME_PREFIX}-rg" \
-            --image "ghcr.io/${{ github.repository }}@sha256:${APP_DIGEST}"
+            --image "ghcr.io/${{ github.repository }}@${APP_DIGEST}"
 
       - name: Wait for the new image to answer /health
         id: readiness
@@ -453,14 +602,14 @@ jobs:
         run: |
           sh scripts/verify-bot-conversation.sh
 
-  # The apply leg: the exact plan the release planned and saved —
-  # downloaded from the private state storage, hash-checked against
-  # the plan hash in the release identity, applied under the demo
-  # environment's approval, then deleted whether the apply passed or
-  # failed.
+  # The apply leg: the exact plan the release planned and saved — downloaded
+  # from the private state storage, hash-checked against the plan hash in the
+  # release identity, applied under the demo.
   infra-apply:
     needs: [release-summary, infra-release]
-    if: needs.release-summary.result == 'success' && needs.infra-release.result == 'success' && !github.event.act
+    if: >-
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.release-summary.result ==
+      'success' && needs.infra-release.result == 'success' && !github.event.act
     runs-on: ubuntu-latest
     environment:
       name: demo
@@ -568,12 +717,14 @@ jobs:
             --delete-snapshots include
 
   # The knowledge base follows the same discipline: staging filled and
-  # retrieval-checked first, production filled only under the demo
-  # environment's approval. The command is the same production fill the
-  # weekly schedule runs, serialized through the same concurrency group.
+  # retrieval-checked first, production filled only under the demo environment's
+  # approval.
   ingest-production:
-    needs: [release-summary, ingest-release]
-    if: needs.release-summary.result == 'success' && needs.ingest-release.result == 'success' && !github.event.act
+    needs: [release-summary, ingest-release, app-release]
+    if: >-
+      !cancelled() && !failure() &&
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.release-summary.result ==
+      'success' && needs.ingest-release.result == 'success' && !github.event.act
     runs-on: ubuntu-latest
     environment:
       name: demo
@@ -588,6 +739,8 @@ jobs:
       PUBLIC_HOSTNAME: ${{ secrets.PUBLIC_HOSTNAME }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Require the demo bindings
         env:
@@ -607,9 +760,21 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-evaluation
+          path: evidence
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: 3.13
+      - name: Recheck approved evaluation freshness
+        env:
+          EVALUATION_RUN_ID: ${{ github.run_id }}:${{ github.run_attempt }}
+          EXPECTED_APP_DIGEST: ${{ needs.app-release.outputs.digest }}
+        run: |
+          uv sync --locked --project services/ingest
+          uv run --project services/ingest python eval/release.py --verify-only \
+            --candidate evidence/candidate.json --output evidence/evaluation.json
 
       - name: Fill the production index
         env:
@@ -619,16 +784,17 @@ jobs:
           uv run --project services/ingest ingest \
             --kb kb \
             --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_SHA" \
             --prefix "${NAME_PREFIX}"
 
-  # Production imports the exact ZIP the release packed: the job
-  # downloads the uploaded artifact, unpacks it, points the connector
-  # and the deployment settings at the production host, and imports
-  # that tree — it never re-packs the checked-out source. Runs under
-  # the demo environment's approval.
+  # Production imports the exact ZIP the release packed: the job downloads the
+  # uploaded artifact, unpacks it, points the connector and the deployment
+  # settings at the production host, and imports that.
   pp-production:
     needs: [release-summary, pp-release]
-    if: needs.release-summary.result == 'success' && needs.pp-release.result == 'success' && !github.event.act
+    if: >-
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.release-summary.result ==
+      'success' && needs.pp-release.result == 'success' && !github.event.act
     runs-on: ubuntu-latest
     environment:
       name: demo

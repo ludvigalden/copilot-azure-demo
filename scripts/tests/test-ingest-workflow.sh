@@ -1,20 +1,5 @@
 #!/bin/sh
-# Structural assertions on the Ingest workflow. Overlapping runs must
-# serialize through a workflow-level concurrency group without
-# cancellation, the staging path must be the chain
-# validate-kb -> push-staging with no continue-on-error escape hatch on
-# it, the release surface must add the staging-check retrieval
-# verification behind push-staging, and production must be gated on the
-# staging job actually succeeding: the prod job must need both
-# prerequisites, its condition must carry no status function that could
-# run it past a failed staging, it must keep the negated
-# github.event.act term so a local act run cannot reach production, and
-# it must be false in every event context where the staging job skips.
-# The prod job runs on the weekly schedule only: the release path's
-# production write is release.yml's ingest-production job. GitHub
-# enforces concurrency only in the real runner, so this proves the
-# workflow's shape, not its runtime behavior. Hermetic: it reads the
-# repository's own files and touches no network and no cloud.
+# Structural assertions on the Ingest workflow.
 set -eu
 
 cd "$(git rev-parse --show-toplevel)"
@@ -130,7 +115,7 @@ staging_if = (jobs.get("push-staging") or {}).get("if")
 staging_if = str(staging_if) if staging_if is not None else None
 
 
-def evaluate(expr, event, act):
+def evaluate(expr, event, act, main=True, candidate=False):
     """Evaluate the event-gate subset of GitHub expressions.
 
     The file's conditions use only github.event_name string comparison,
@@ -145,6 +130,8 @@ def evaluate(expr, event, act):
     body = body.replace("\x00", "!=")
     body = body.replace("github.event_name", repr(event))
     body = body.replace("github.event.act", str(act))
+    body = body.replace("github.ref", repr("refs/heads/main" if main else "refs/heads/other"))
+    body = body.replace("inputs.release_candidate", str(candidate))
     for bad in ("import", "__", "lambda", "open(", "eval", "exec"):
         if bad in body:
             raise SystemExit(f"unexpected construct in condition: {expr!r}")
@@ -154,7 +141,7 @@ def evaluate(expr, event, act):
     return bool(eval(body, {"__builtins__": {}}, {}))
 
 
-for event in ("push", "pull_request", "schedule", "workflow_dispatch", "workflow_call"):
+for event in ("push", "pull_request", "schedule", "workflow_dispatch"):
     for act in (False, True):
         staging_runs = (
             True if staging_if is None else evaluate(staging_if, event, act)
@@ -165,6 +152,36 @@ for event in ("push", "pull_request", "schedule", "workflow_dispatch", "workflow
             f"in event context (event={event}, act={act}) production "
             "would run while the staging job is skipped",
         )
+
+# Reusable calls retain their caller event; the input selects the cloud leg.
+for workflow_name in ("ingest", "infra"):
+    with open(f".github/workflows/{workflow_name}.yml") as fh:
+        workflow_doc = yaml.safe_load(fh)
+    on = workflow_doc.get("on", workflow_doc.get(True))
+    check(on["workflow_call"]["inputs"]["release_candidate"]["default"] is False,
+          f"{workflow_name}: release candidate defaults on")
+    for event in ("push", "schedule", "workflow_dispatch", "pull_request"):
+        for main in (False, True):
+            for candidate in (False, True):
+                for act in (False, True):
+                    leg = "push-staging" if workflow_name == "ingest" else "terraform-staging"
+                    expr = str(workflow_doc["jobs"][leg]["if"])
+                    actual = evaluate(expr, event, act, main, candidate)
+                    direct = event in (("schedule", "workflow_dispatch") if workflow_name == "ingest" else ("workflow_dispatch",))
+                    expected = event != "pull_request" and main and (candidate or direct)
+                    check(actual == expected, f"matrix {workflow_name}/{event}/main={main}/selected={candidate}/act={act}: expected={expected} actual={actual}")
+                    print(f"matrix {workflow_name}/{event}/main={main}/selected={candidate}/act={act}: expected={expected} actual={actual}")
+                    if workflow_name == "ingest":
+                        actual = evaluate(prod_if, event, act, main, candidate)
+                        expected = event == "schedule" and main and not act
+                        check(actual == expected, "scheduled production gate mismatch")
+check("scheduled-eval" in needs, "production lacks scheduled quality dependency")
+check(jobs["scheduled-eval"]["needs"] == "staging-check", "scheduled quality lacks retrieval dependency")
+for job_name in ("push-staging", "push"):
+    steps = jobs[job_name]["steps"]
+    check(any("setup-uv" in str(step.get("uses", "")) for step in steps), "fresh ingestion job lacks uv")
+    check(any("uv sync --locked" in str(step.get("run", "")) for step in steps), "fresh ingestion job lacks locked sync")
+    check(any('--ref "$GITHUB_SHA"' in str(step.get("run", "")) for step in steps), "mutable KB citation ref")
 
 # A step cannot make the job run, but no step in the prod job may carry
 # a status function that would ignore the job's own gating either.
@@ -196,7 +213,7 @@ else
         || fail "concurrency group is not the static 'ingest' (grep fallback)"
     grep -q '^  cancel-in-progress: false$' "$workflow" \
         || fail "cancel-in-progress is not explicitly false (grep fallback)"
-    grep -q 'needs: \[validate-kb, push-staging\]' "$workflow" \
+    grep -q 'needs: \[validate-kb, push-staging, scheduled-eval\]' "$workflow" \
         || fail "the prod job does not need push-staging or validate-kb (grep fallback)"
     grep -q '^    needs: validate-kb$' "$workflow" \
         || fail "the staging job does not need validate-kb (grep fallback)"
