@@ -347,4 +347,13 @@ describe("App at the component and auth boundary", () => {
     expect(s.alert()).toContain("Could not load your profile.")
     expect(s.has("Jane Doe")).toBe(false)
   })
+
+  it("keeps the FluentProvider root above the app surface", () => {
+    useMiddleware(() => {})
+    renderApp({ signedIn: false })
+    const provider = document.querySelector(".fui-FluentProvider")
+    expect(provider).not.toBeNull()
+    expect(document.querySelectorAll(".fui-FluentProvider")).toHaveLength(1)
+    expect(provider?.querySelector("textarea")).not.toBeNull()
+  })
 })

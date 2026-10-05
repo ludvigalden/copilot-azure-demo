@@ -174,4 +174,12 @@ describe("the auth boundary at the real API client", () => {
     const logout = msalState.logoutCalls[0] as { account?: { username?: string } }
     expect(logout.account?.username).toBe("jane@contoso.com")
   })
+
+  it("keeps the app subtree inside the MsalProvider element the gate returns", async () => {
+    const { authGate, initializeAuth } = await loadAuth()
+    const { msal } = await initializeAuth(AUTH)
+    const gated = authGate(msal, "surface")
+    expect(gated.props.children).toBe("surface")
+    expect(gated.props.instance).toBe(msal)
+  })
 })

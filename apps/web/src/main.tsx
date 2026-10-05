@@ -1,5 +1,5 @@
 import { FluentProvider, webLightTheme } from "@fluentui/react-components"
-import { StrictMode } from "react"
+import { StrictMode, type ReactNode } from "react"
 import { createRoot } from "react-dom/client"
 import { App } from "./App"
 import { api, needsAuth } from "./api/client"
@@ -8,11 +8,10 @@ async function bootstrap() {
   const container = document.getElementById("root")
   if (!container) throw new Error("Missing #root element")
 
-  let app = (
-    <FluentProvider theme={webLightTheme}>
-      <App />
-    </FluentProvider>
-  )
+  // Only the inner subtree varies between the anonymous and authenticated
+  // shapes; the FluentProvider must stay mounted above both, or production
+  // visitors get an unthemed app.
+  let children: ReactNode = <App />
   try {
     const { data } = await api.GET("/config")
     if (needsAuth(data)) {
@@ -23,7 +22,7 @@ async function bootstrap() {
       // action. Redirects navigate the page, so render-time state is accurate;
       // a failed silent renewal blocks the request, offering re-auth, guest
       // or sign-out.
-      app = authGate(
+      children = authGate(
         msal,
         <App
           signedIn={msal.getAllAccounts().length > 0}
@@ -36,6 +35,11 @@ async function bootstrap() {
   } catch {
     // /config unreachable or sign-in setup failed: render without sign-in.
   }
+  const app = (
+    <FluentProvider theme={webLightTheme}>
+      {children}
+    </FluentProvider>
+  )
   createRoot(container).render(<StrictMode>{app}</StrictMode>)
 }
 
