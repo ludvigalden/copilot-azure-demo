@@ -14,6 +14,7 @@ from typing import Any
 MIN_GROUNDEDNESS = 4.0
 MIN_MEAN_RELEVANCE = 4.0
 DEFAULT_K = 3
+FRESHNESS_TTL_SECONDS = 7200
 
 # The golden dataset the gate judges every results document against.
 # Pure-function callers (the tests) may pass their own dataset seam;
@@ -476,7 +477,7 @@ def gate_release_document(
             raise ValueError("timestamps must be timezone-aware")
         if not started <= completed <= clock < expires:
             failures.append("stale, future or expired evaluation")
-        if (clock - completed).total_seconds() > 7200:
+        if (clock - completed).total_seconds() > FRESHNESS_TTL_SECONDS:
             failures.append("evaluation is stale")
         duration_limit = _resolve(
             document, "release_evidence.budgets.max_duration_seconds"
@@ -485,7 +486,7 @@ def gate_release_document(
             failures.append("invalid evaluation deadline")
         elif (completed - started).total_seconds() > duration_limit:
             failures.append("evaluation exceeded deadline")
-        if not 0 < (expires - started).total_seconds() <= 7200:
+        if not 0 < (expires - started).total_seconds() <= FRESHNESS_TTL_SECONDS:
             failures.append("invalid evaluation expiry")
     except (KeyError, ValueError, TypeError):
         failures.append("missing or invalid evaluation timestamps")

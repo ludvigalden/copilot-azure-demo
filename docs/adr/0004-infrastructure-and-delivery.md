@@ -126,3 +126,43 @@ separate manual evidence, not a release claim. Concurrency serializes active
 runs but replaces pending runs rather than guaranteeing a durable queue.
 Workflow consolidation, local-image deployment, rollback, previews, blue-green,
 versioned indexes and managed downstream Power Platform remain separate work.
+
+## Amendment — 2026-10-05: saved-plan freshness
+
+Saved plans carry schema, byte hash, creation and expiry timestamps, source,
+run ID, run attempt, plan ID and a release-candidate hash. The candidate hash
+binds source, selected components and run/attempt before planning. Plans and
+metadata use immutable per-attempt private blob paths; the approval manifest
+and summary display all metadata. Apply compares private metadata with that
+manifest, verifies candidate/source/run/attempt and bytes, and rejects expiry
+immediately before Terraform. Plan and evaluation use one named 7,200-second
+freshness constant. Expiry or mismatch stops apply: regeneration requires a
+fresh run/attempt, a new plan summary and its own protected-environment approval;
+apply never regenerates a plan under an earlier approval.
+
+## Amendment — 2026-10-05: shared-target serialization
+
+Release, Ingest and Infra are thin entrypoints that each own the one
+`shared-target-demo` concurrency group with `cancel-in-progress: false`;
+their bodies are reusable-only `*-candidate.yml` workflows that declare
+no event triggers and no concurrency at any depth. The lease therefore
+spans the whole entrypoint run — validation, the staging legs,
+evaluation, the summary, the approval wait, the pre-apply recheck and
+every promotion leg — and a standalone ingest run (pull request, weekly
+schedule, manual) or infra run (pull request, manual) queues behind an
+in-flight release of any component instead of overlapping it. The
+release body calls the ingest and infra bodies directly, never the
+locked entrypoints, so one run acquires the lease exactly once; a
+workflow-level group inside a called body would either make a run wait
+on itself or be silently ignored, and no semantics about callee-side
+concurrency is relied on — GitHub's
+[concurrency groups](https://docs.github.com/en/rest/actions/concurrency-groups)
+document lease behavior around reusable workflows without a verbatim
+normative called-workflow rule, so the design rests only on documented
+caller-side behavior. GitHub's queue keeps a single pending run per
+group and replaces it rather than guaranteeing a durable backlog, so a
+third simultaneous entrypoint can still be dropped; serialization is
+the guarantee, backlog retention is not. The distinct component job
+groups (`app-staging`, `ingest-staging`, `infra-staging`,
+`infra-demo`, `deploy-demo`, `pp-staging`, `pp-demo`) remain as
+defense in depth.

@@ -44,10 +44,13 @@ technology it uses does a real job:
 | `Dockerfile` | The single container image: the SPA built and copied into the API image. |
 | `.dockerignore` | The image build context: only what the two build stages read. |
 | `.github/workflows/ci.yml` | The pull-request gate: contract regeneration drift check, lints and all test suites. |
-| `.github/workflows/release.yml` | The release coordinator: on pushes to `main` it validates everything through `ci.yml`, calls the component workflows for what changed, and runs the production legs behind the demo environment's approval. |
+| `.github/workflows/release.yml` | The release coordinator entrypoint: a thin locked wrapper — on pushes to `main` it takes the `shared-target-demo` lease and calls the reusable `release-candidate.yml` body, which validates everything through `ci.yml`, calls the component bodies for what changed, and runs the production legs behind the demo environment's approval. |
+| `.github/workflows/release-candidate.yml` | The release body: component selection, the staging legs, evaluation, the summary and the approved production legs. Reusable-only, no triggers, no concurrency of its own. |
 | `.github/workflows/app.yml` | Builds the container image into the GitHub Container Registry and deploys it to the staging container app when the release coordinator calls it. |
-| `.github/workflows/infra.yml` | Plans the Terraform `main/` root on pull requests, applies staging when the release coordinator calls it, and saves the production plan for the approved apply. |
-| `.github/workflows/ingest.yml` | Runs the knowledge-base ingester on a weekly schedule and on changes; fills the staging index, with the production index filled on the weekly run. |
+| `.github/workflows/infra.yml` | The infra entrypoint: a thin locked wrapper that plans the Terraform `main/` root on pull requests and on manual dispatch, holding the `shared-target-demo` lease for the whole run; the reusable `infra-candidate.yml` body applies staging when the release coordinator calls it and saves the production plan for the approved apply. |
+| `.github/workflows/infra-candidate.yml` | The infra body: static checks, the staging plan and apply, and the saved production plan. Reusable-only, no triggers, no concurrency of its own. |
+| `.github/workflows/ingest.yml` | The ingest entrypoint: a thin locked wrapper running on pull requests, the weekly schedule and manual dispatch, holding the `shared-target-demo` lease for the whole run; the reusable `ingest-candidate.yml` body fills the staging index, with the production index filled on the weekly run. |
+| `.github/workflows/ingest-candidate.yml` | The ingest body: knowledge-base validation, the staging fill, the retrieval check and the scheduled production fill. Reusable-only, no triggers, no concurrency of its own. |
 | `.github/workflows/power-platform.yml` | Packs the unmanaged solution on pull requests and imports it to staging once the staging environment variable is configured. |
 | `scripts/` | Small operational entry points: the local workflow runner, the headless bot conversation proof, the Teams package build and publish. |
 | `docs/adr/` | Architecture decision records. |
@@ -150,8 +153,14 @@ identity, tickets account, bot). Staging applies before production in
 the same workflow runs, so every change answers for itself in staging
 first; its knowledge lives in its own index on the shared service.
 
-Six workflows in `.github/workflows/` run the pipeline. Five own one
-component each; `release.yml` coordinates them on pushes to `main`:
+Six workflows in `.github/workflows/` run the pipeline, across nine
+files. Five own one component each; `release.yml` coordinates them on
+pushes to `main`. Three files — `release.yml`, `ingest.yml` and
+`infra.yml` — are thin entrypoints: each keeps its event triggers, owns
+the one `shared-target-demo` concurrency group that serializes every
+write to the shared demo target for its whole run, and calls a
+reusable-only `*-candidate.yml` body that carries no triggers and no
+concurrency of its own:
 
 - `ci.yml` regenerates the contract outputs and fails on drift, and
   runs the tests and lints of the API, the SPA and both Python

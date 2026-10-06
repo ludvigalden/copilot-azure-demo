@@ -4,6 +4,8 @@ set -eu
 
 cd "$(git rev-parse --show-toplevel)"
 workflow=.github/workflows/release.yml
+body=.github/workflows/release-candidate.yml
+infra_body=.github/workflows/infra-candidate.yml
 
 fail() {
     echo "FAIL: $1" >&2
@@ -11,11 +13,13 @@ fail() {
 }
 
 [ -f "$workflow" ] || fail "$workflow is missing"
+[ -f "$body" ] || fail "$body is missing"
+[ -f "$infra_body" ] || fail "$infra_body is missing"
 app_workflow=.github/workflows/app.yml
 [ -f "$app_workflow" ] || fail "$app_workflow is missing"
 
 if python3 -c 'import yaml' >/dev/null 2>&1; then
-    python3 - "$workflow" "$app_workflow" <<'PY' || exit 1
+    python3 - "$workflow" "$app_workflow" "$body" "$infra_body" <<'PY' || exit 1
 import re
 import sys
 
@@ -23,6 +27,8 @@ import yaml
 
 with open(sys.argv[1]) as fh:
     doc = yaml.safe_load(fh)
+with open(sys.argv[3]) as fh:
+    cand = yaml.safe_load(fh)
 
 failures = []
 
@@ -32,7 +38,7 @@ def check(ok, message):
         failures.append(message)
 
 
-jobs = doc.get("jobs") or {}
+jobs = cand.get("jobs") or {}
 required_jobs = [
     "changes", "validate", "app-release", "ingest-release",
     "infra-release", "pp-release", "release-summary",
@@ -401,7 +407,7 @@ base.update(APP_SELECTED="true", KB_SELECTED="true", INFRA_SELECTED="true", PP_S
               APP_DIGEST="sha256:" + "a" * 64, STAGING_READINESS="true", STAGING_SMOKE="pass",
               STAGING_E2E="pass", STAGING_ASSETS="pass", STAGING_THEME="pass", EVAL_PASSED="true",
               KB_COMMIT="b" * 40, DOC_COUNT="15", PLAN_HASH="c" * 64, PLAN_SAVED="true",
-              SOLUTION_VERSION="1.0.0", PP_STAGING_STATUS="pass")
+              SOLUTION_VERSION="1.0.0", PP_STAGING_STATUS="pass", PLAN_METADATA='{"schema_version":1}')
 with tempfile.TemporaryDirectory() as directory:
     def shell(env):
         return subprocess.run(["/bin/sh", "-eu", "-c", gate_run], cwd=directory,
@@ -409,7 +415,7 @@ with tempfile.TemporaryDirectory() as directory:
     check(shell(base) == 0, "valid evidence rejected")
     for key in ("APP_DIGEST", "STAGING_READINESS", "STAGING_SMOKE", "STAGING_E2E", "STAGING_ASSETS",
                 "STAGING_THEME", "EVAL_PASSED", "KB_COMMIT", "DOC_COUNT", "PLAN_HASH", "PLAN_SAVED",
-                "SOLUTION_VERSION"):
+                "PLAN_METADATA", "SOLUTION_VERSION"):
         changed = {**base, key: ""}
         check(shell(changed) == 1, f"negative control admitted missing {key}")
         print(f"negative control missing {key}: expected=1 actual={shell(changed)}")
@@ -461,6 +467,98 @@ with tempfile.TemporaryDirectory() as directory:
         check(all(value != "released" for value in manifest["component_status"].values()),
               "preapproval manifest claimed release")
     print("approval artifact controls: app, KB, evaluation and unconfigured PP passed")
+    infra_doc = yaml.safe_load(Path(sys.argv[4]).read_text())
+    apply_steps = jobs["infra-apply"]["steps"]
+    apply = next(s for s in apply_steps if s.get("name") == "Apply the approved plan")
+    check(apply["run"].index("plan-evidence.py verify") < apply["run"].index("terraform apply"),
+          "plan freshness gate must run immediately before apply")
+    check("create" not in apply["run"], "apply must never regenerate a plan")
+    check("--approved ../../../approved/release-identity.json" in apply["run"],
+          "apply does not bind to the approved manifest")
+    save = next(s for s in infra_doc["jobs"]["terraform-demo"]["steps"]
+                if s.get("name") == "Save the plan for the approved apply")
+    check("tfplans/$plan_id.tfplan" in save["run"] and "tfplans/$plan_id.json" in save["run"],
+          "private plan and metadata paths are not per-attempt")
+    check("tfplans/demo.tfplan" not in str(doc) + str(infra_doc), "fixed plan blob survived")
+    env = {**identity_env, "PLAN_METADATA": json.dumps({"created_at": "created", "expires_at": "expiry",
+          "candidate_sha256": "a" * 64, "run_id": "123", "run_attempt": "1", "plan_id": "fresh"})}
+    result = subprocess.run(["/bin/sh", "-eu", "-c", identity_step["run"]], cwd=directory,
+                            env={**os.environ, **env}, capture_output=True)
+    check(result.returncode == 0, "plan metadata approval shell failed")
+    manifest = json.loads((path / "release-identity.json").read_text())
+    check(manifest["infrastructure_plan"] == json.loads(env["PLAN_METADATA"]),
+          "approval manifest changed plan metadata")
+    summary_text = (path / "summary").read_text()
+    check("Plan candidate_sha256" in summary_text and "Plan expires_at" in summary_text,
+          "reviewable summary omitted plan identity or expiry")
+    print("plan metadata approval and pre-apply wiring controls passed")
+
+# (j) the entrypoint is a thin locked wrapper and the body is a
+# reusable-only, lease-free workflow that calls the component bodies
+# directly rather than a locked entrypoint.
+wrapper_on = doc.get(True) if True in doc else (doc.get("on") or {})
+check(
+    set(wrapper_on) == {"push", "workflow_dispatch"},
+    f"the release wrapper triggers drifted: {sorted(wrapper_on)}",
+)
+check(
+    wrapper_on["push"].get("branches") == ["main"],
+    "the release wrapper push trigger does not target main only",
+)
+check(
+    isinstance(wrapper_on["push"].get("paths"), list)
+    and ".github/workflows/**" in wrapper_on["push"]["paths"],
+    "the release wrapper push paths lost the workflow arm",
+)
+wrapper_conc = doc.get("concurrency") or {}
+check(
+    wrapper_conc.get("group") == "shared-target-demo"
+    and wrapper_conc.get("cancel-in-progress") is False,
+    "the release wrapper does not hold the shared-target lease with "
+    "cancel-in-progress false",
+)
+wrapper_jobs = doc.get("jobs") or {}
+check(
+    sorted(wrapper_jobs) == ["release"],
+    f"the release wrapper is not a single-job entrypoint: {sorted(wrapper_jobs)}",
+)
+release_job = wrapper_jobs.get("release") or {}
+check(
+    str(release_job.get("uses", "")).endswith("/release-candidate.yml"),
+    "the release wrapper does not call the release candidate body",
+)
+check(
+    release_job.get("secrets") == "inherit",
+    "the release wrapper call does not inherit secrets",
+)
+check(
+    release_job.get("permissions", {}).get("packages") == "write"
+    and release_job.get("permissions", {}).get("id-token") == "write",
+    "the release wrapper call does not grant the component legs their scopes",
+)
+body_on = cand.get(True) if True in cand else (cand.get("on") or {})
+check(
+    set(body_on) == {"workflow_call"},
+    f"the release candidate body is not reusable-only: {sorted(body_on)}",
+)
+check(
+    "concurrency" not in cand,
+    "the release candidate body declares a workflow-level concurrency block",
+)
+body_uses = {
+    str(job.get("uses", "")).rsplit("/", 1)[-1]
+    for job in (cand.get("jobs") or {}).values()
+    if isinstance(job.get("uses"), str)
+}
+check(
+    {"ingest-candidate.yml", "infra-candidate.yml"} <= body_uses,
+    f"the release body does not call the ingest and infra bodies "
+    f"directly: {sorted(body_uses)}",
+)
+check(
+    "ingest.yml" not in body_uses and "infra.yml" not in body_uses,
+    "the release body calls a locked entrypoint instead of a body",
+)
 
 if failures:
     for message in failures:
@@ -474,32 +572,67 @@ else
     # PyYAML is unavailable, so this falls back to textual assertions.
     # It pins the exact expected lines instead of parsing; it cannot
     # evaluate the gates, only verify they are present verbatim.
-    grep -q "needs: \[changes, validate, app-release, ingest-release, infra-release, pp-release, release-eval\]" "$workflow" \
+    grep -q '^concurrency:' "$workflow" \
+        || fail "no wrapper workflow-level concurrency block (grep fallback)"
+    grep -q '^  group: shared-target-demo$' "$workflow" \
+        || fail "the wrapper does not hold the shared-target lease (grep fallback)"
+    grep -q '^  cancel-in-progress: false$' "$workflow" \
+        || fail "the wrapper cancel-in-progress is not false (grep fallback)"
+    grep -q '^  push:' "$workflow" \
+        || fail "the wrapper push trigger is missing (grep fallback)"
+    grep -q '^    branches: \[main\]$' "$workflow" \
+        || fail "the wrapper push trigger does not target main (grep fallback)"
+    grep -q '^  workflow_dispatch:' "$workflow" \
+        || fail "the wrapper workflow_dispatch trigger is missing (grep fallback)"
+    if grep -q '^  workflow_call:' "$workflow"; then
+        fail "the wrapper declares a workflow_call trigger (grep fallback)"
+    fi
+    grep -q 'uses: ./.github/workflows/release-candidate.yml' "$workflow" \
+        || fail "the wrapper does not call the release candidate body (grep fallback)"
+    grep -q 'secrets: inherit' "$workflow" \
+        || fail "the wrapper call does not inherit secrets (grep fallback)"
+    if grep -q '^concurrency:' "$body"; then
+        fail "the candidate body declares a workflow-level concurrency block (grep fallback)"
+    fi
+    if grep -q 'shared-target-demo' "$body"; then
+        fail "the candidate body carries the shared-target group (grep fallback)"
+    fi
+    grep -q '^  workflow_call:' "$body" \
+        || fail "the candidate body lacks the workflow_call trigger (grep fallback)"
+    grep -q 'uses: ./.github/workflows/ingest-candidate.yml' "$body" \
+        || fail "the release body does not call the ingest body (grep fallback)"
+    grep -q 'uses: ./.github/workflows/infra-candidate.yml' "$body" \
+        || fail "the release body does not call the infra body (grep fallback)"
+    grep -q 'release_candidate:' "$infra_body" \
+        || fail "the infra candidate body lacks the release_candidate input (grep fallback)"
+    grep -q 'candidate_sha256:' "$infra_body" \
+        || fail "the infra candidate body lacks the candidate_sha256 input (grep fallback)"
+    grep -q "needs: \[changes, validate, app-release, ingest-release, infra-release, pp-release, release-eval\]" "$body" \
         || fail "the summary does not need the changes job (grep fallback)"
-    grep -q "needs.changes.result == 'success'" "$workflow" \
+    grep -q "needs.changes.result == 'success'" "$body" \
         || fail "the summary condition never checks the changes result (grep fallback)"
-    grep -q "needs.changes.outputs.app == 'true'" "$workflow" \
+    grep -q "needs.changes.outputs.app == 'true'" "$body" \
         || fail "the app selection term is missing (grep fallback)"
-    grep -q "needs.changes.outputs.kb == 'true'" "$workflow" \
+    grep -q "needs.changes.outputs.kb == 'true'" "$body" \
         || fail "the kb selection term is missing (grep fallback)"
-    grep -q "needs.changes.outputs.infra == 'true'" "$workflow" \
+    grep -q "needs.changes.outputs.infra == 'true'" "$body" \
         || fail "the infra selection term is missing (grep fallback)"
-    grep -q "needs.changes.outputs.power_platform == 'true'" "$workflow" \
+    grep -q "needs.changes.outputs.power_platform == 'true'" "$body" \
         || fail "the power_platform selection term is missing (grep fallback)"
-    grep -q "Assert the selected components carried their evidence" "$workflow" \
+    grep -q "Assert the selected components carried their evidence" "$body" \
         || fail "the evidence-gate step is missing (grep fallback)"
-    grep -q 'fail "app selected but the release carries no image digest"' "$workflow" \
+    grep -q 'fail "app selected but the release carries no image digest"' "$body" \
         || fail "the app evidence check is missing (grep fallback)"
-    grep -q 'fail "knowledge base selected but its document count was not recorded"' "$workflow" \
+    grep -q 'fail "knowledge base selected but its document count was not recorded"' "$body" \
         || fail "the kb evidence check is missing (grep fallback)"
-    grep -q 'fail "infrastructure selected but the saved plan was not recorded"' "$workflow" \
+    grep -q 'fail "infrastructure selected but the saved plan was not recorded"' "$body" \
         || fail "the infra evidence check is missing (grep fallback)"
     # shellcheck disable=SC2016
-    grep -q '"$PP_STAGING_STATUS" != "not_configured"' "$workflow" \
+    grep -q '"$PP_STAGING_STATUS" != "not_configured"' "$body" \
         || fail "the power platform not-configured marker check is missing (grep fallback)"
-    grep -q "selected_components" "$workflow" \
+    grep -q "selected_components" "$body" \
         || fail "the manifest does not record selected components (grep fallback)"
-    grep -q "component_status" "$workflow" \
+    grep -q "component_status" "$body" \
         || fail "the manifest does not record component statuses (grep fallback)"
     # The app workflow's release legs gate on the trusted caller-event
     # expression; the dead workflow_call gate is gone.
@@ -511,39 +644,40 @@ else
         || fail "the app workflow_call trigger is missing (grep fallback)"
     grep -q "if: github.event_name == 'pull_request'" "$app_workflow" \
         || fail "the app pull-request build gate is missing (grep fallback)"
-    # The dispatch input, the refusal step, the guarded selection, the
-    # untouched path arms, and the manifest markers.
+    # The dispatch input lives on the wrapper; the refusal step, the
+    # guarded selection, the untouched path arms, and the manifest
+    # markers live on the body.
     grep -q "release_app:" "$workflow" \
         || fail "the release_app dispatch input is missing (grep fallback)"
     grep -q "type: boolean" "$workflow" \
         || fail "the release_app input is not declared boolean (grep fallback)"
     grep -q "default: false" "$workflow" \
         || fail "the release_app input does not default to false (grep fallback)"
-    grep -q "Refuse intentional releases off main" "$workflow" \
+    grep -q "Refuse intentional releases off main" "$body" \
         || fail "the off-main refusal step is missing (grep fallback)"
-    grep -q "github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'" "$workflow" \
+    grep -q "github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'" "$body" \
         || fail "the refusal condition is missing (grep fallback)"
     # shellcheck disable=SC2016
-    grep -q '"${{ github.event_name }}" = "workflow_dispatch"' "$workflow" \
+    grep -q '"${{ github.event_name }}" = "workflow_dispatch"' "$body" \
         || fail "the dispatch guard on the event name is missing (grep fallback)"
     # shellcheck disable=SC2016
-    grep -q '"${{ github.event.inputs.release_app }}" = "true"' "$workflow" \
+    grep -q '"${{ github.event.inputs.release_app }}" = "true"' "$body" \
         || fail "the release_app selection guard is missing (grep fallback)"
-    grep -q "services/ingest/\*)" "$workflow" \
+    grep -q "services/ingest/\*)" "$body" \
         || fail "the kb changed-path arm is missing (grep fallback)"
-    grep -q "infra/terraform/main/\*)" "$workflow" \
+    grep -q "infra/terraform/main/\*)" "$body" \
         || fail "the infra changed-path arm is missing (grep fallback)"
-    grep -q "apps/power-platform/\*)" "$workflow" \
+    grep -q "apps/power-platform/\*)" "$body" \
         || fail "the power platform changed-path arm is missing (grep fallback)"
-    grep -q "dotnet-tools.json|ItSupport.slnx)" "$workflow" \
+    grep -q "dotnet-tools.json|ItSupport.slnx)" "$body" \
         || fail "the dotnet-tools changed-path arm is missing (grep fallback)"
-    grep -q "trigger: \$trigger" "$workflow" \
+    grep -q "trigger: \$trigger" "$body" \
         || fail "the manifest does not record the trigger (grep fallback)"
-    grep -q "selection_source" "$workflow" \
+    grep -q "selection_source" "$body" \
         || fail "the manifest does not record the selection source (grep fallback)"
-    grep -q '"dispatch_input"' "$workflow" \
+    grep -q '"dispatch_input"' "$body" \
         || fail "the dispatch_input marker is missing (grep fallback)"
-    grep -q '"push_paths"' "$workflow" \
+    grep -q '"push_paths"' "$body" \
         || fail "the push_paths marker is missing (grep fallback)"
     echo "ok: release-summary gate verified textually (PyYAML unavailable)"
 fi

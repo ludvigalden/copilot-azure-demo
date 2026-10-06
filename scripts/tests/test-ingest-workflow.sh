@@ -1,9 +1,12 @@
 #!/bin/sh
-# Structural assertions on the Ingest workflow.
+# Structural assertions on the Ingest workflow: the thin locked wrapper
+# and the reusable candidate body it calls.
 set -eu
 
 cd "$(git rev-parse --show-toplevel)"
 workflow=.github/workflows/ingest.yml
+body=.github/workflows/ingest-candidate.yml
+infra_body=.github/workflows/infra-candidate.yml
 
 fail() {
     echo "FAIL: $1" >&2
@@ -11,9 +14,11 @@ fail() {
 }
 
 [ -f "$workflow" ] || fail "$workflow is missing"
+[ -f "$body" ] || fail "$body is missing"
+[ -f "$infra_body" ] || fail "$infra_body is missing"
 
 if python3 -c 'import yaml' >/dev/null 2>&1; then
-    python3 - "$workflow" <<'PY' || exit 1
+    python3 - "$workflow" "$body" "$infra_body" <<'PY' || exit 1
 import re
 import sys
 
@@ -21,6 +26,8 @@ import yaml
 
 with open(sys.argv[1]) as fh:
     doc = yaml.safe_load(fh)
+with open(sys.argv[2]) as fh:
+    body_doc = yaml.safe_load(fh)
 
 failures = []
 
@@ -30,21 +37,72 @@ def check(ok, message):
         failures.append(message)
 
 
+# The entrypoint wrapper owns the one shared-target lease for every
+# trigger it declares, so a pull request, the weekly fill and a manual
+# run all queue behind an in-flight release instead of overlapping it.
 concurrency = doc.get("concurrency")
-check(isinstance(concurrency, dict), "no workflow-level concurrency block")
+check(isinstance(concurrency, dict), "no wrapper workflow-level concurrency block")
 if isinstance(concurrency, dict):
     check(
-        concurrency.get("group") == "ingest",
-        "concurrency group is not the static 'ingest' "
+        concurrency.get("group") == "shared-target-demo",
+        "wrapper concurrency group is not the shared target "
         f"(got {concurrency.get('group')!r})",
     )
     check(
         concurrency.get("cancel-in-progress") is False,
-        "cancel-in-progress is not explicitly false; a cancelled "
+        "wrapper cancel-in-progress is not explicitly false; a cancelled "
         "mid-ingest run can leave an index half converged",
     )
 
-jobs = doc.get("jobs") or {}
+wrapper_on = doc.get("on", doc.get(True))
+check(
+    set(wrapper_on) == {"pull_request", "schedule", "workflow_dispatch"},
+    f"wrapper triggers drifted: {sorted(wrapper_on)}",
+)
+wrapper_jobs = doc.get("jobs") or {}
+check(
+    sorted(wrapper_jobs) == ["ingest"],
+    f"the wrapper is not a single-job entrypoint: {sorted(wrapper_jobs)}",
+)
+wrapper_job = wrapper_jobs.get("ingest") or {}
+check(
+    str(wrapper_job.get("uses", "")).endswith("/ingest-candidate.yml"),
+    "the wrapper does not call the ingest candidate body",
+)
+check(
+    wrapper_job.get("secrets") == "inherit",
+    "the wrapper call does not inherit secrets",
+)
+
+# The candidate body carries no workflow-level concurrency: a called
+# workflow must never acquire a lease the entrypoint already holds,
+# and neither ignoring nor honoring a nested group is a documented
+# semantic this design may depend on.
+check(
+    "concurrency" not in body_doc,
+    "the candidate body still declares a workflow-level concurrency block",
+)
+on = body_doc.get("on", body_doc.get(True))
+check(
+    set(on) == {"workflow_call"},
+    f"the candidate body is not reusable-only: {sorted(on)}",
+)
+check(
+    on["workflow_call"]["inputs"]["release_candidate"]["default"] is False,
+    "release candidate defaults on",
+)
+outputs = on["workflow_call"].get("outputs") or {}
+for name in ("kb_commit", "index_name", "doc_count"):
+    check(name in outputs, f"the candidate body lost the {name} output")
+check(
+    (body_doc.get("jobs", {}).get("push-staging") or {})
+    .get("concurrency", {})
+    .get("group")
+    == "ingest-staging",
+    "the staging job lost its own component lock",
+)
+
+jobs = body_doc.get("jobs") or {}
 for name in ("validate-kb", "push-staging", "staging-check", "push"):
     check(name in jobs, f"job '{name}' is missing")
 
@@ -154,12 +212,23 @@ for event in ("push", "pull_request", "schedule", "workflow_dispatch"):
         )
 
 # Reusable calls retain their caller event; the input selects the cloud leg.
-for workflow_name in ("ingest", "infra"):
-    with open(f".github/workflows/{workflow_name}.yml") as fh:
+for workflow_name, candidate_file in (
+    ("ingest", sys.argv[2]),
+    ("infra", sys.argv[3]),
+):
+    with open(candidate_file) as fh:
         workflow_doc = yaml.safe_load(fh)
     on = workflow_doc.get("on", workflow_doc.get(True))
     check(on["workflow_call"]["inputs"]["release_candidate"]["default"] is False,
           f"{workflow_name}: release candidate defaults on")
+    check(
+        set(on) == {"workflow_call"},
+        f"{workflow_name}: candidate body is not reusable-only",
+    )
+    check(
+        "concurrency" not in workflow_doc,
+        f"{workflow_name}: candidate body declares workflow-level concurrency",
+    )
     for event in ("push", "schedule", "workflow_dispatch", "pull_request"):
         for main in (False, True):
             for candidate in (False, True):
@@ -199,7 +268,8 @@ if failures:
     for message in failures:
         print(f"FAIL: {message}", file=sys.stderr)
     raise SystemExit(1)
-print("ok: overlapping ingest runs serialize, staging-check verifies "
+print("ok: the locked wrapper serializes standalone ingestion against a "
+      "release, the candidate body is lease-free, staging-check verifies "
       "the retrieval, and production stays behind a successful "
       "staging push")
 PY
@@ -208,26 +278,46 @@ else
     # It pins the exact expected lines instead of parsing; it cannot
     # evaluate the event gates, only verify they are present verbatim.
     grep -q '^concurrency:' "$workflow" \
-        || fail "no workflow-level concurrency block (grep fallback)"
-    grep -q '^  group: ingest$' "$workflow" \
-        || fail "concurrency group is not the static 'ingest' (grep fallback)"
+        || fail "no wrapper workflow-level concurrency block (grep fallback)"
+    grep -q '^  group: shared-target-demo$' "$workflow" \
+        || fail "wrapper concurrency group is not the shared target (grep fallback)"
     grep -q '^  cancel-in-progress: false$' "$workflow" \
-        || fail "cancel-in-progress is not explicitly false (grep fallback)"
-    grep -q 'needs: \[validate-kb, push-staging, scheduled-eval\]' "$workflow" \
+        || fail "wrapper cancel-in-progress is not explicitly false (grep fallback)"
+    grep -q 'uses: ./.github/workflows/ingest-candidate.yml' "$workflow" \
+        || fail "the wrapper does not call the ingest candidate body (grep fallback)"
+    grep -q 'secrets: inherit' "$workflow" \
+        || fail "the wrapper call does not inherit secrets (grep fallback)"
+    grep -q '^  pull_request:' "$workflow" \
+        || fail "the wrapper pull_request trigger is missing (grep fallback)"
+    grep -q '^  schedule:' "$workflow" \
+        || fail "the wrapper schedule trigger is missing (grep fallback)"
+    grep -q '^  workflow_dispatch:' "$workflow" \
+        || fail "the wrapper workflow_dispatch trigger is missing (grep fallback)"
+    if grep -q '^  workflow_call:' "$workflow"; then
+        fail "the wrapper declares a workflow_call trigger (grep fallback)"
+    fi
+    if grep -q '^concurrency:' "$body"; then
+        fail "the candidate body declares a workflow-level concurrency block (grep fallback)"
+    fi
+    grep -q '^  workflow_call:' "$body" \
+        || fail "the candidate body lacks the workflow_call trigger (grep fallback)"
+    grep -q 'needs: \[validate-kb, push-staging, scheduled-eval\]' "$body" \
         || fail "the prod job does not need push-staging or validate-kb (grep fallback)"
-    grep -q '^    needs: validate-kb$' "$workflow" \
+    grep -q '^    needs: validate-kb$' "$body" \
         || fail "the staging job does not need validate-kb (grep fallback)"
-    if grep -q 'continue-on-error' "$workflow"; then
+    if grep -q 'continue-on-error' "$body"; then
         fail "a publishing job carries continue-on-error (grep fallback)"
     fi
-    if grep -Eq 'always\(|failure\(|cancelled\(' "$workflow"; then
+    if grep -Eq 'always\(|failure\(|cancelled\(' "$body"; then
         fail "a status function appears in a job or step condition (grep fallback)"
     fi
-    grep -q "github.event_name != 'pull_request'" "$workflow" \
+    grep -q "github.event_name != 'pull_request'" "$body" \
         || fail "the staging event gate is missing (grep fallback)"
-    grep -q "github.event_name == 'schedule'" "$workflow" \
+    grep -q "github.event_name == 'schedule'" "$body" \
         || fail "the prod schedule gate is missing (grep fallback)"
-    grep -q '!github.event.act' "$workflow" \
+    grep -q '!github.event.act' "$body" \
         || fail "the prod act gate is missing (grep fallback)"
+    grep -q 'release_candidate' "$infra_body" \
+        || fail "the infra candidate body lacks the release_candidate input (grep fallback)"
     echo "ok: ingest workflow gates verified textually (PyYAML unavailable)"
 fi

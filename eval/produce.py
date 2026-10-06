@@ -218,7 +218,7 @@ class RunConfig:
     run_id: str = ""
     started_at: str = ""
     max_duration_seconds: int = 900
-    expires_after_seconds: int = 7200
+    expires_after_seconds: int = gate.FRESHNESS_TTL_SECONDS
 
 
 def default_transport(
