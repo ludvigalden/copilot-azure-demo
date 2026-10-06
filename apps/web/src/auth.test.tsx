@@ -12,6 +12,8 @@ const msalState = vi.hoisted(() => ({
   loginCalls: [] as unknown[],
   logoutCalls: [] as unknown[],
   initCalls: 0,
+  redirectImpl: null as null | (() => unknown),
+  redirectCalls: 0,
 }))
 
 vi.mock("@azure/msal-browser", () => {
@@ -26,6 +28,10 @@ vi.mock("@azure/msal-browser", () => {
     }
     async initialize(): Promise<void> {
       msalState.initCalls += 1
+    }
+    async handleRedirectPromise(): Promise<unknown> {
+      msalState.redirectCalls += 1
+      return msalState.redirectImpl ? msalState.redirectImpl() : null
     }
     async loginRedirect(args: unknown): Promise<void> {
       msalState.loginCalls.push(args)
@@ -88,6 +94,8 @@ describe("the auth boundary at the real API client", () => {
     msalState.loginCalls = []
     msalState.logoutCalls = []
     msalState.initCalls = 0
+    msalState.redirectImpl = null
+    msalState.redirectCalls = 0
     fetchCalls = []
     vi.stubGlobal(
       "fetch",
@@ -181,5 +189,31 @@ describe("the auth boundary at the real API client", () => {
     const gated = authGate(msal, "surface")
     expect(gated.props.children).toBe("surface")
     expect(gated.props.instance).toBe(msal)
+  })
+
+  it("awaits the login-redirect callback and reports the account it yields", async () => {
+    // The account exists only once the redirect callback has redeemed the
+    // response; before that fix the bootstrap read an empty cache and
+    // mis-rendered the signed-in visitor as a guest until a refresh.
+    msalState.redirectImpl = () => {
+      msalState.accounts = SIGNED_IN
+      return null
+    }
+    const { initializeAuth } = await loadAuth()
+    const { signedIn, redirectError } = await initializeAuth(AUTH)
+    expect(msalState.redirectCalls).toBe(1)
+    expect(signedIn).toBe(true)
+    expect(redirectError).toBeNull()
+  })
+
+  it("reports a failed redirect callback instead of falling back to guest silently", async () => {
+    msalState.redirectImpl = () => {
+      throw new Error("login_state_mismatch")
+    }
+    const { initializeAuth } = await loadAuth()
+    const { signedIn, redirectError } = await initializeAuth(AUTH)
+    expect(signedIn).toBe(false)
+    expect(redirectError).toBeInstanceOf(Error)
+    expect((redirectError as Error).message).toBe("login_state_mismatch")
   })
 })

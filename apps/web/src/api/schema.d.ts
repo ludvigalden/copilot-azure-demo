@@ -126,6 +126,14 @@ export interface components {
             /** @description The caller's manager, when one is recorded. */
             manager?: components["schemas"]["Person"] | null;
         };
+        /** @description Why the signed-in caller's profile could not be read. */
+        ProfileUnavailable: {
+            /**
+             * @description consent_required when the directory access needs a one-time admin consent; unavailable for any other directory failure.
+             * @enum {string}
+             */
+            code: "consent_required" | "unavailable";
+        };
         /** @description A question for the knowledge base. */
         AnswerRequest: {
             /** @description The question to answer. */
@@ -236,6 +244,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description The signed-in caller's profile could not be read from the directory — for example when the directory on-behalf-of access still needs a one-time admin consent, or the directory is unreachable. Anonymous callers are unaffected: they receive the guest profile. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileUnavailable"];
+                };
             };
         };
     };

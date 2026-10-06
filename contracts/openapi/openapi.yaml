@@ -61,6 +61,17 @@ paths:
           description: The request was malformed.
         "401":
           description: Presented credentials failed authentication.
+        "503":
+          description: >
+            The signed-in caller's profile could not be read from the
+            directory — for example when the directory on-behalf-of access
+            still needs a one-time admin consent, or the directory is
+            unreachable. Anonymous callers are unaffected: they receive the
+            guest profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileUnavailable"
   /answers:
     post:
       operationId: AnswerQuestion
@@ -200,6 +211,20 @@ components:
           allOf:
             - $ref: "#/components/schemas/Person"
           description: The caller's manager, when one is recorded.
+    ProfileUnavailable:
+      type: object
+      description: Why the signed-in caller's profile could not be read.
+      required:
+        - code
+      properties:
+        code:
+          type: string
+          description: >
+            consent_required when the directory access needs a one-time
+            admin consent; unavailable for any other directory failure.
+          enum:
+            - consent_required
+            - unavailable
     AnswerRequest:
       type: object
       description: A question for the knowledge base.

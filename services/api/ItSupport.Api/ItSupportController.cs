@@ -87,9 +87,50 @@ public sealed class ItSupportController(
             return Challenge();
         }
 
-        return User.Identity?.IsAuthenticated == true
-            ? Ok(await directory.GetProfileAsync(User, cancellationToken))
-            : Ok(Identity.Guest.Profile);
+        if (User.Identity?.IsAuthenticated != true)
+        {
+            return Ok(Identity.Guest.Profile);
+        }
+
+        try
+        {
+            return Ok(await directory.GetProfileAsync(User, cancellationToken));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // The on-behalf-of directory read is the one leg that can fail
+            // after authentication; answer with a typed 503 the client can
+            // explain and retry instead of an opaque 500.
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new ProfileUnavailable
+            {
+                Code = DirectoryConsentMissing(ex)
+                    ? ProfileUnavailableCode.Consent_required
+                    : ProfileUnavailableCode.Unavailable,
+            });
+        }
+    }
+
+    // Entra reports a missing Graph permission grant in the exchange error
+    // tree: user or admin has not consented (AADSTS65001), or the app needs
+    // an admin to consent (AADSTS90094).
+    private static bool DirectoryConsentMissing(Exception exception)
+    {
+        for (var e = exception; e is not null; e = e.InnerException)
+        {
+            var text = e.ToString();
+            if (text.Contains("AADSTS65001", StringComparison.Ordinal)
+                || text.Contains("AADSTS90094", StringComparison.Ordinal)
+                || text.Contains("has not consented", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // Guest-open: a signed-in caller is answered as themselves, an anonymous

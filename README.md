@@ -17,6 +17,8 @@ guests until single sign-on verifies them
 ([docs/agent.md](docs/agent.md)).
 
 The deployed demo runs at <https://copilot-azure.demo.ludvigalden.com>.
+Signing in requires an account in the demo's Microsoft Entra tenant;
+everyone else can continue as a guest.
 
 The repository is deliberately small and readable end to end. Every
 technology it uses does a real job:

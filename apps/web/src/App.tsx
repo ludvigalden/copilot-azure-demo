@@ -10,7 +10,7 @@ import {
   Textarea,
   tokens,
 } from "@fluentui/react-components"
-import { type KeyboardEvent, useEffect, useRef, useState } from "react"
+import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from "react"
 import { api, ReauthRequiredError } from "./api/client"
 import type { components } from "./api/schema"
 
@@ -191,12 +191,15 @@ function focusFeedExit(feed: HTMLElement, after: boolean): void {
 
 export function App({
   signedIn = false,
+  initialAuthError = false,
   signIn,
   signOut,
   continueAsGuest,
 }: {
-  /** True when an account existed at bootstrap; the profile fetch confirms it. */
+  /** True when an account existed once the redirect callback resolved. */
   signedIn?: boolean
+  /** True when the login redirect itself failed; opens on the recovery choice. */
+  initialAuthError?: boolean
   signIn?: () => void
   signOut?: () => void
   continueAsGuest?: () => void
@@ -204,7 +207,10 @@ export function App({
   const styles = useStyles()
   const [profile, setProfile] = useState<UserProfile | null>(null)
   const [guest, setGuest] = useState(false)
-  const [authError, setAuthError] = useState(false)
+  const [authError, setAuthError] = useState(initialAuthError)
+  // null while the profile loads; the kinds are distinguished so the
+  // consent case can say exactly what is missing instead of a shrug.
+  const [profileError, setProfileError] = useState<"consent" | "failed" | null>(null)
   const [question, setQuestion] = useState("")
   const [answer, setAnswer] = useState<Answer | null>(null)
   const [asking, setAsking] = useState(false)
@@ -221,23 +227,35 @@ export function App({
   const feedRef = useRef<HTMLDivElement | null>(null)
   const answerFocusPending = useRef(false)
 
-  useEffect(() => {
+  // Reads only refs and setters, so it is stable: the mount effect runs
+  // once, and the retry button re-runs it on demand.
+  const loadProfile = useCallback(() => {
     if (guestRef.current) return
     const current = ++profileEpoch.current
     // Sign-in is optional: the API answers this anonymous with the guest profile.
     api.GET("/me").then(
-      ({ data, response }) => {
+      ({ data, error: body, response }) => {
         if (profileEpoch.current !== current) return
-        if (response.ok) setProfile(data ?? null)
-        else setError(PROFILE_ERROR)
+        if (response.ok) {
+          setProfile(data ?? null)
+          setProfileError(null)
+        } else if (response.status === 503 && body?.code === "consent_required") {
+          setProfileError("consent")
+        } else {
+          setProfileError("failed")
+        }
       },
       (err: unknown) => {
         if (profileEpoch.current !== current) return
         if (err instanceof ReauthRequiredError) setAuthError(true)
-        else setError(PROFILE_ERROR)
+        else setProfileError("failed")
       },
     )
   }, [])
+
+  useEffect(() => {
+    loadProfile()
+  }, [loadProfile])
 
   // After a successful ask, move focus to the answer article: it is the
   // turn the asker waits for (APG feed pattern, app-driven focus). Only
@@ -256,6 +274,7 @@ export function App({
     setProfile(null)
     setGuest(true)
     setAuthError(false)
+    setProfileError(null)
     setError(null)
   }
 
@@ -263,6 +282,7 @@ export function App({
     profileEpoch.current += 1
     guestRef.current = true
     setProfile(null)
+    setProfileError(null)
     // logoutRedirect navigates the whole page; the local clears only keep
     // the render honest for the moment before the navigation lands.
     signOut?.()
@@ -393,7 +413,11 @@ export function App({
                   </Button>
                 )}
               </>
-            ) : null)}
+            ) : profileError ? null : (
+              // Signed in, profile still in flight: the identity waits for
+              // the fetch rather than flashing a guest or an empty header.
+              <Text className={styles.muted}>Loading your profile…</Text>
+            ))}
         </div>
       </header>
       <main className={styles.workspace} aria-label="IT support workspace">
@@ -416,6 +440,20 @@ export function App({
                   Sign out
                 </Button>
               )}
+            </div>
+          </Card>
+        )}
+        {profileError && (
+          <Card className={styles.surface}>
+            <Text block role="alert">
+              {profileError === "consent"
+                ? "Your profile needs a one-time admin consent for directory access. Ask your administrator to grant it, then try again."
+                : PROFILE_ERROR}
+            </Text>
+            <div className={styles.actions}>
+              <Button appearance="secondary" onClick={loadProfile}>
+                Try again
+              </Button>
             </div>
           </Card>
         )}

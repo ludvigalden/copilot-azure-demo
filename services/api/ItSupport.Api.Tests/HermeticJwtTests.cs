@@ -116,7 +116,7 @@ public sealed class HermeticJwtTests : IDisposable
     }
 
     /// <summary>An Entra-mode API whose ticket store and directory are fixed.</summary>
-    private ApiHandle NewApi(IDictionary<string, string?>? extraSettings = null)
+    private ApiHandle NewApi(IDictionary<string, string?>? extraSettings = null, IUserDirectory? directory = null)
     {
         var handle = new ApiHandle();
         var settings = extraSettings is null
@@ -131,7 +131,7 @@ public sealed class HermeticJwtTests : IDisposable
                     handle.Store = store;
                     return store;
                 });
-                services.AddScoped<IUserDirectory>(_ => FixedUserDirectory.Instance);
+                services.AddScoped<IUserDirectory>(_ => directory ?? FixedUserDirectory.Instance);
             },
             settings);
         handle.Factory = factory;
@@ -215,6 +215,15 @@ public sealed class HermeticJwtTests : IDisposable
         }
     }
 
+    /// <summary>A directory whose on-behalf-of read fails, standing in for a refused Graph exchange.</summary>
+    private sealed class ThrowingUserDirectory(Exception exception) : IUserDirectory
+    {
+        public Task<UserProfile> GetProfileAsync(ClaimsPrincipal caller, CancellationToken cancellationToken = default)
+        {
+            throw exception;
+        }
+    }
+
     [Fact]
     public async Task ValidDelegatedToken_accepts_andBindsCallerClaims()
     {
@@ -244,6 +253,49 @@ public sealed class HermeticJwtTests : IDisposable
         Assert.NotNull(profile);
         Assert.Equal(FixedUserDirectory.Email, profile.Email);
         Assert.NotEqual(Guest.Email, profile.Email);
+    }
+
+    [Fact]
+    public async Task Profile_readRefusedForConsent_answers503WithConsentCode()
+    {
+        // The Graph on-behalf-of exchange answers AADSTS65001 until a
+        // one-time admin consent for User.Read exists; the caller must see
+        // which leg failed instead of an opaque 500.
+        var api = NewApi(directory: new ThrowingUserDirectory(new InvalidOperationException(
+            "One or more errors occurred. (AADSTS65001: The user or administrator has not consented to use the application.)")));
+        api.Client.DefaultRequestHeaders.Authorization = new("Bearer", Mint());
+
+        var response = await api.Client.GetAsync("/api/me");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<ProfileUnavailable>();
+        Assert.NotNull(body);
+        Assert.Equal(ProfileUnavailableCode.Consent_required, body.Code);
+    }
+
+    [Fact]
+    public async Task Profile_readFailingOtherwise_answers503Unavailable()
+    {
+        var api = NewApi(directory: new ThrowingUserDirectory(new HttpRequestException("directory unreachable")));
+        api.Client.DefaultRequestHeaders.Authorization = new("Bearer", Mint());
+
+        var response = await api.Client.GetAsync("/api/me");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<ProfileUnavailable>();
+        Assert.NotNull(body);
+        Assert.Equal(ProfileUnavailableCode.Unavailable, body.Code);
+    }
+
+    [Fact]
+    public async Task Profile_directoryFailure_neverTouchesAnonymousGuests()
+    {
+        var api = NewApi(directory: new ThrowingUserDirectory(new InvalidOperationException("boom")));
+
+        var profile = await api.Client.GetFromJsonAsync<UserProfile>("/api/me");
+
+        Assert.NotNull(profile);
+        Assert.Equal(Guest.Name, profile.DisplayName);
     }
 
     [Fact]

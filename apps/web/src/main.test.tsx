@@ -19,12 +19,18 @@ const msalState = vi.hoisted(() => ({
   silentImpl: null as null | (() => Promise<{ accessToken: string }>),
   initCalls: 0,
   silentCalls: 0,
+  redirectImpl: null as null | (() => unknown),
+  redirectCalls: 0,
 }))
 
 vi.mock("@azure/msal-browser", () => {
   class MockPublicClientApplication {
     async initialize(): Promise<void> {
       msalState.initCalls += 1
+    }
+    async handleRedirectPromise(): Promise<unknown> {
+      msalState.redirectCalls += 1
+      return msalState.redirectImpl ? msalState.redirectImpl() : null
     }
     getAllAccounts(): unknown[] {
       return msalState.accounts
@@ -124,6 +130,8 @@ describe("the bootstrap keeps one themed provider above every branch", () => {
     msalState.silentImpl = null
     msalState.initCalls = 0
     msalState.silentCalls = 0
+    msalState.redirectImpl = null
+    msalState.redirectCalls = 0
     setFetchImpl((request) => {
       const path = new URL(request.url).pathname
       if (path === "/api/config") return jsonResponse({ auth: null })
@@ -169,6 +177,76 @@ describe("the bootstrap keeps one themed provider above every branch", () => {
     const provider = themedRoot()
     expect(msalState.silentCalls).toBeGreaterThan(0)
     expect(provider.textContent).toContain(PROFILE.displayName)
+    expect(provider.querySelector("textarea")).not.toBeNull()
+  })
+
+  it("settles the signed-in surface after the redirect callback without a refresh", async () => {
+    // The account exists only once the redirect callback is redeemed; the
+    // bootstrap must await it, or the freshly-returned visitor keeps the
+    // stale guest chrome until a manual page refresh.
+    msalState.redirectImpl = () => {
+      msalState.accounts = [{ homeAccountId: "h1", username: "zelda@contoso.example" }]
+      return null
+    }
+    msalState.silentImpl = async () => ({ accessToken: "token-123" })
+    setFetchImpl((request) => {
+      const path = new URL(request.url).pathname
+      if (path === "/api/config") return jsonResponse({ auth: AUTH })
+      if (path === "/api/me") return jsonResponse(PROFILE)
+      return jsonResponse({}, 404)
+    })
+    await loadMain()
+    await settle()
+    const provider = themedRoot()
+    expect(msalState.redirectCalls).toBeGreaterThanOrEqual(1)
+    expect(provider.textContent).toContain(PROFILE.displayName)
+    expect(provider.textContent).not.toContain("Guest")
+    expect(provider.querySelector("textarea")).not.toBeNull()
+  })
+
+  it("opens on the recovery choice when the redirect callback fails", async () => {
+    // A failed redirect is answered with explicit choices, never a silent
+    // guest fallback.
+    msalState.redirectImpl = () => {
+      throw new Error("login_state_mismatch")
+    }
+    setFetchImpl((request) => {
+      const path = new URL(request.url).pathname
+      if (path === "/api/config") return jsonResponse({ auth: AUTH })
+      return jsonResponse({}, 404)
+    })
+    await loadMain()
+    await settle()
+    const provider = themedRoot()
+    expect(provider.textContent).toContain("Choose how to continue")
+    expect(provider.textContent).not.toContain(PROFILE.displayName)
+    const again = [...provider.querySelectorAll("button")].find(
+      (button) => button.textContent === "Sign in again",
+    )
+    expect(again).toBeTruthy()
+  })
+
+  it("renders the identity-free loading phase until the auth state resolves", async () => {
+    const gate: { release: ((response: Response) => void) | null } = { release: null }
+    setFetchImpl((request) => {
+      const path = new URL(request.url).pathname
+      if (path === "/api/config") {
+        return new Promise<Response>((resolve) => {
+          gate.release = resolve
+        })
+      }
+      if (path === "/api/me") return jsonResponse(PROFILE)
+      return jsonResponse({}, 404)
+    })
+    await loadMain()
+    await settle(3)
+    // Loading owns the screen: no app chrome, no guest, no sign-in button.
+    expect(document.body.textContent).toContain("Loading…")
+    expect(document.body.querySelector("textarea")).toBeNull()
+    expect(document.body.textContent).not.toContain("Guest")
+    gate.release?.(jsonResponse({ auth: null }))
+    await settle()
+    const provider = themedRoot()
     expect(provider.querySelector("textarea")).not.toBeNull()
   })
 

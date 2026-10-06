@@ -47,13 +47,16 @@ function createAuthMiddleware(
 }
 
 /**
- * Creates and initializes MSAL, attaches the bearer-token middleware to the
- * shared API client, and returns the sign-in actions. Sign-in is optional:
- * the app renders for anonymous callers, who are served as guests by the API.
+ * Initializes MSAL, resolves any pending login-redirect callback, and
+ * attaches the bearer middleware. Returns the settled auth state so the
+ * first render paints the caller as they are, not as a guess.
  */
-export async function initializeAuth(
-  auth: AuthConfig,
-): Promise<{ msal: PublicClientApplication; actions: AuthActions }> {
+export async function initializeAuth(auth: AuthConfig): Promise<{
+  msal: PublicClientApplication
+  actions: AuthActions
+  signedIn: boolean
+  redirectError: unknown
+}> {
   const msal = new PublicClientApplication({
     auth: {
       clientId: auth.clientId,
@@ -63,6 +66,19 @@ export async function initializeAuth(
     cache: { cacheLocation: "sessionStorage" },
   })
   await msal.initialize()
+
+  // The redirect back from sign-in carries its redemption in the URL:
+  // consume it before anyone reads account state, or the caller renders
+  // as a guest until a manual refresh. MsalProvider's own call receives
+  // the same cached promise.
+  let redirectError: unknown = null
+  try {
+    await msal.handleRedirectPromise()
+  } catch (error) {
+    // A failed redirect is an auth failure to surface with explicit
+    // recovery choices, never a silent fallback to guest.
+    redirectError = error
+  }
 
   let guestMode = false
   api.use(createAuthMiddleware(msal, auth.scope, () => guestMode))
@@ -75,7 +91,12 @@ export async function initializeAuth(
       guestMode = true
     },
   }
-  return { msal, actions }
+  return {
+    msal,
+    actions,
+    signedIn: msal.getAllAccounts().length > 0,
+    redirectError,
+  }
 }
 
 /**

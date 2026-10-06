@@ -1,4 +1,11 @@
-import { FluentProvider, makeStaticStyles, makeStyles, tokens } from "@fluentui/react-components"
+import {
+  FluentProvider,
+  makeStaticStyles,
+  makeStyles,
+  Spinner,
+  Text,
+  tokens,
+} from "@fluentui/react-components"
 import { type ReactNode, StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 import { App } from "./App"
@@ -15,6 +22,21 @@ const useStyles = makeStyles({
     minHeight: "100dvh",
     backgroundColor: tokens.colorNeutralBackground2,
   },
+  loading: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: "100dvh",
+    gap: tokens.spacingHorizontalS,
+  },
+  pendingIndicator: {
+    "@media (prefers-reduced-motion: reduce)": {
+      animationName: "none",
+      animationDuration: "0s",
+      animationIterationCount: "1",
+      "&::before, &::after": { animationName: "none", animationDuration: "0s" },
+    },
+  },
 })
 
 function AppSurface({ children }: { children: ReactNode }) {
@@ -27,9 +49,37 @@ function AppSurface({ children }: { children: ReactNode }) {
   )
 }
 
+/**
+ * The loading phase: quiet, themed, identity-free. It owns the screen
+ * until initial auth state — including any login-redirect callback —
+ * resolves, so no chrome renders on a guess.
+ */
+function AppLoading() {
+  const styles = useStyles()
+  return (
+    <div className={styles.loading} role="status" aria-live="polite">
+      <Spinner
+        size="tiny"
+        aria-hidden="true"
+        spinner={{ className: styles.pendingIndicator }}
+        spinnerTail={{ className: styles.pendingIndicator }}
+      />
+      <Text>Loading…</Text>
+    </div>
+  )
+}
+
 async function bootstrap() {
   const container = document.getElementById("root")
   if (!container) throw new Error("Missing #root element")
+  const root = createRoot(container)
+  root.render(
+    <StrictMode>
+      <AppSurface>
+        <AppLoading />
+      </AppSurface>
+    </StrictMode>,
+  )
 
   // Only the inner subtree varies between the anonymous and authenticated
   // shapes; the FluentProvider must stay mounted above both, or production
@@ -40,14 +90,15 @@ async function bootstrap() {
     if (needsAuth(data)) {
       // MSAL lives in a separate chunk, fetched only when the API reports a configured sign-in.
       const { authGate, initializeAuth } = await import("./auth")
-      const { msal, actions } = await initializeAuth(data.auth)
-      // Sign-in is optional; no account renders as a guest.
-      // Redirects navigate the page. Failed renewal offers an explicit
-      // re-auth, guest, or sign-out choice before another request.
+      const { msal, actions, signedIn, redirectError } = await initializeAuth(data.auth)
+      // The callback is awaited inside initializeAuth, so the signed-in
+      // state is settled at render time; a failed redirect opens on the
+      // explicit recovery choice, never a silent guest.
       children = authGate(
         msal,
         <App
-          signedIn={msal.getAllAccounts().length > 0}
+          signedIn={signedIn}
+          initialAuthError={redirectError !== null}
           signIn={actions.signIn}
           signOut={actions.signOut}
           continueAsGuest={actions.continueAsGuest}
@@ -57,7 +108,7 @@ async function bootstrap() {
   } catch {
     // /config unreachable or sign-in setup failed: render without sign-in.
   }
-  createRoot(container).render(
+  root.render(
     <StrictMode>
       <AppSurface>{children}</AppSurface>
     </StrictMode>,

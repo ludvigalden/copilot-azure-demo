@@ -210,6 +210,60 @@ describe("App at the component and auth boundary", () => {
     expect(fetchLog()[0]?.authorization).toBe("Bearer token-123")
   })
 
+  it("waits for the signed-in profile instead of flashing guest chrome", async () => {
+    const pendingMe: { resolve: ((response: Response) => void) | null } = { resolve: null }
+    useSignedInMiddleware()
+    setFetchImpl((request) =>
+      new URL(request.url).pathname === "/api/me"
+        ? new Promise<Response>((resolve) => {
+            pendingMe.resolve = resolve
+          })
+        : jsonResponse({}, 404),
+    )
+    const s = renderApp({ signedIn: true })
+    await flush()
+    expect(s.has("Loading your profile…")).toBe(true)
+    expect(s.has("Guest")).toBe(false)
+    expect(s.has("Sign in")).toBe(false)
+    pendingMe.resolve?.(jsonResponse(PROFILE))
+    await flush()
+    expect(s.has("Jane Doe")).toBe(true)
+    expect(s.has("Loading your profile…")).toBe(false)
+  })
+
+  it("explains a consent hold and retries the profile on demand", async () => {
+    useSignedInMiddleware()
+    let meCalls = 0
+    setFetchImpl((request) => {
+      if (new URL(request.url).pathname !== "/api/me") return jsonResponse({}, 404)
+      meCalls += 1
+      return meCalls === 1 ? jsonResponse({ code: "consent_required" }, 503) : jsonResponse(PROFILE)
+    })
+    const s = renderApp({ signedIn: true })
+    await flush()
+    expect(s.alert()).toContain("one-time admin consent")
+    expect(s.has("Jane Doe")).toBe(false)
+    await s.click("Try again")
+    expect(meCalls).toBe(2)
+    expect(s.has("Jane Doe")).toBe(true)
+    expect(s.alert()).toBeNull()
+  })
+
+  it("shows the generic profile error and recovers through retry", async () => {
+    useSignedInMiddleware()
+    let meCalls = 0
+    setFetchImpl((request) => {
+      if (new URL(request.url).pathname !== "/api/me") return jsonResponse({}, 404)
+      meCalls += 1
+      return meCalls === 1 ? jsonResponse({ code: "unavailable" }, 503) : jsonResponse(PROFILE)
+    })
+    const s = renderApp({ signedIn: true })
+    await flush()
+    expect(s.alert()).toContain("Could not load your profile.")
+    await s.click("Try again")
+    expect(s.has("Jane Doe")).toBe(true)
+  })
+
   it("surfaces an explicit choice and blocks the request when renewal fails", async () => {
     useMiddleware(() => {
       throw new ReauthRequiredError("blocked")
@@ -221,6 +275,18 @@ describe("App at the component and auth boundary", () => {
     expect(s.button("Sign out")).toBeTruthy()
     expect(s.has("Could not load your profile.")).toBe(false)
     expect(fetchLog()).toHaveLength(0)
+  })
+
+  it("opens on the recovery choice when the login redirect itself failed", async () => {
+    // A failed redirect must not paint the guest chrome on top: the
+    // explicit choices answer it.
+    useMiddleware(() => {})
+    const s = renderApp({ signedIn: false, initialAuthError: true })
+    await flush()
+    expect(s.button("Sign in again")).toBeTruthy()
+    expect(s.button("Continue as guest")).toBeTruthy()
+    expect(s.button("Sign out")).toBeTruthy()
+    expect(s.has("Guest")).toBe(false)
   })
 
   it("continue as guest clears the choice, and later requests travel tokenless by choice", async () => {
