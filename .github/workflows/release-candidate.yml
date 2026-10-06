@@ -593,7 +593,7 @@ jobs:
           BOT_RESOURCE_GROUP: ${{ format('{0}-rg', vars.NAME_PREFIX) }}
           EXPECTED_CITATION: printer.md
         run: |
-          sh scripts/verify-bot-conversation.sh
+          bash scripts/verify-bot-conversation.sh
 
   # The apply leg: the exact plan the release planned and saved — downloaded
   # from the private state storage, hash-checked against the plan hash in the
