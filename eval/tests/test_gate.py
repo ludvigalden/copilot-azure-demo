@@ -60,7 +60,10 @@ def passing_row(query, article):
         "expected_article": article,
         "answer_text": f"the answer to {query}",
         "citations": [
-            ["Article", f"https://github.com/example/repo/blob/main/kb/{article}"]
+            [
+                "Article",
+                f"https://github.com/example/repo/blob/0123456789abcdef0123456789abcdef01234567/kb/{article}",
+            ]
         ],
         "retrieval_filenames": [article],
         "retrieval_hit": True,
@@ -211,7 +214,10 @@ def test_a_doctored_retrieval_story_is_rejected():
     document = results_document(SINGLE)
     row = document["results"][0]
     row["citations"] = [
-        ["Other", "https://github.com/example/repo/blob/main/kb/other.md"]
+        [
+            "Other",
+            "https://github.com/example/repo/blob/0123456789abcdef0123456789abcdef01234567/kb/other.md",
+        ]
     ]
 
     result = gate_document(document, SINGLE)
@@ -464,9 +470,18 @@ def test_a_non_record_row_fails():
 
 def test_citation_filenames_strip_and_dedupe_in_order():
     citations = (
-        ("t", "https://github.com/o/r/blob/main/kb/a.md"),
-        ("t", "https://github.com/o/r/blob/main/kb/b.md?x=1"),
-        ("t", "https://github.com/o/r/blob/main/kb/a.md#section"),
+        (
+            "t",
+            "https://github.com/o/r/blob/0123456789abcdef0123456789abcdef01234567/kb/a.md",
+        ),
+        (
+            "t",
+            "https://github.com/o/r/blob/0123456789abcdef0123456789abcdef01234567/kb/b.md?x=1",
+        ),
+        (
+            "t",
+            "https://github.com/o/r/blob/0123456789abcdef0123456789abcdef01234567/kb/a.md#section",
+        ),
     )
 
     assert citation_filenames(citations) == ("a.md", "b.md")

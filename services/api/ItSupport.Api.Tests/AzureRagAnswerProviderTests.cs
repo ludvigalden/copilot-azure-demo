@@ -20,11 +20,11 @@ public sealed class AzureRagAnswerProviderTests
     [Fact]
     public void ToAnswer_keepsChunksInRetrievalOrder_andCitesEachArticleOnce()
     {
-        var passwordUrl = "https://github.com/acme/it-demo/blob/main/kb/password-reset.md";
+        var passwordUrl = "https://github.com/acme/it-demo/blob/0123456789abcdef0123456789abcdef01234567/kb/password-reset.md";
         var documents = new List<KbDocument>
         {
             new() { Id = "password-reset-1", Title = "Password reset", Content = "First chunk.", Url = passwordUrl },
-            new() { Id = "vpn-1", Title = "Connect to the VPN", Content = "VPN chunk.", Url = "https://github.com/acme/it-demo/blob/main/kb/vpn.md" },
+            new() { Id = "vpn-1", Title = "Connect to the VPN", Content = "VPN chunk.", Url = "https://github.com/acme/it-demo/blob/0123456789abcdef0123456789abcdef01234567/kb/vpn.md" },
             new() { Id = "password-reset-2", Title = "Password reset", Content = "Second chunk.", Url = passwordUrl },
         };
 
@@ -32,7 +32,7 @@ public sealed class AzureRagAnswerProviderTests
 
         Assert.Equal("Reset steps.", answer.Text);
         Assert.Equal(
-            [("Password reset", passwordUrl), ("Connect to the VPN", "https://github.com/acme/it-demo/blob/main/kb/vpn.md")],
+            [("Password reset", passwordUrl), ("Connect to the VPN", "https://github.com/acme/it-demo/blob/0123456789abcdef0123456789abcdef01234567/kb/vpn.md")],
             answer.Citations.Select(citation => (citation.Title, citation.Url)));
         Assert.Equal(
             ["First chunk.", "VPN chunk.", "Second chunk."],

@@ -27,9 +27,12 @@ class Chunk:
 def chunk_article(path: Path, repo: str, ref: str) -> list[Chunk]:
     """Split one article into per-heading chunks.
 
-    ``repo`` and ``ref`` name the GitHub repository and revision the
-    citation URLs point at (e.g. ``owner/repo`` and ``main``).
+    ``repo`` and ``ref`` name the GitHub repository and the immutable
+    revision the citation URLs point at (e.g. ``owner/repo`` and a full
+    40-hex commit SHA).
     """
+    if not re.fullmatch(r"[0-9a-f]{40}", ref):
+        raise ValueError(f"citation ref must be a full 40-hex commit SHA, got {ref!r}")
     text = path.read_text(encoding="utf-8")
     match = _FRONTMATTER_TITLE.search(text)
     title = match.group(1) if match else path.stem

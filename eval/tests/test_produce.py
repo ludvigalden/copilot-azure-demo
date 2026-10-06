@@ -63,7 +63,7 @@ def answer_body():
         "citations": [
             {
                 "title": "Reset password",
-                "url": "https://github.com/o/r/blob/main/kb/reset-password.md",
+                "url": "https://github.com/o/r/blob/0123456789abcdef0123456789abcdef01234567/kb/reset-password.md",
             }
         ],
         "chunks": [{"title": "t", "content": "c"}],
@@ -561,11 +561,13 @@ def test_capture_rejects_malformed_or_duplicate_index_rows(rows):
         release.normalized_rows(rows)
 
 
-@pytest.mark.parametrize(
-    "mutation",
-    ["none", "image", "revision", "source", "kb", "chunk", "vectorizer", "cap"],
-)
-def test_capture_binds_canned_deployment_and_exact_kb(monkeypatch, mutation):
+def canned_release(monkeypatch):
+    """The canned staging deployment behind the capture tests.
+
+    Returns the mutable ``state`` (rows, app, labels, definition,
+    provider) and the metadata command seam serving it; tests mutate
+    the state, then install the seam.
+    """
     import release
 
     source = "a" * 40
@@ -576,91 +578,79 @@ def test_capture_binds_canned_deployment_and_exact_kb(monkeypatch, mutation):
     monkeypatch.setenv("EVALUATION_RUN_ID", "1:1")
     for name in ("INDEX_NAME", "CHAT_DEPLOYMENT_NAME", "EMBEDDING_DEPLOYMENT_NAME"):
         monkeypatch.delenv(name, raising=False)
-    rows = [
-        {key: getattr(chunk, key) for key in ("id", "title", "content", "url")}
-        for chunk in release.chunk_kb(release.ROOT / "kb", "o/r", source)
-    ]
-    app: dict[str, Any] = {
-        "template": {
-            "containers": [
-                {
-                    "image": image,
-                    "env": [
-                        {
-                            "name": "Search__Endpoint",
-                            "value": "https://shared-srch.search.windows.net",
-                        },
-                        {
-                            "name": "OpenAI__Endpoint",
-                            "value": "https://shared-ai.cognitiveservices.azure.com",
-                        },
-                    ],
-                }
-            ]
-        },
-        "latestReadyRevisionName": "ready",
-        "latestRevisionName": "ready",
-        "configuration": {
-            "activeRevisionsMode": "Single",
-            "ingress": {"fqdn": "stage.example"},
-        },
-    }
-    labels = {
-        "org.opencontainers.image.source": "https://github.com/o/r",
-        "org.opencontainers.image.revision": source,
-    }
-    definition = {
-        "vectorSearch": {
-            "vectorizers": [
-                {
-                    "azureOpenAIParameters": {
-                        "deploymentId": "embedding",
-                        "resourceUri": "https://shared-ai.cognitiveservices.azure.com",
+    state: dict[str, Any] = {
+        "rows": [
+            {key: getattr(chunk, key) for key in ("id", "title", "content", "url")}
+            for chunk in release.chunk_kb(release.ROOT / "kb", "o/r", source)
+        ],
+        "app": {
+            "template": {
+                "containers": [
+                    {
+                        "image": image,
+                        "env": [
+                            {
+                                "name": "Search__Endpoint",
+                                "value": "https://shared-srch.search.windows.net",
+                            },
+                            {
+                                "name": "OpenAI__Endpoint",
+                                "value": "https://shared-ai.cognitiveservices.azure.com",
+                            },
+                        ],
                     }
-                }
-            ]
-        }
+                ]
+            },
+            "latestReadyRevisionName": "ready",
+            "latestRevisionName": "ready",
+            "configuration": {
+                "activeRevisionsMode": "Single",
+                "ingress": {"fqdn": "stage.example"},
+            },
+        },
+        "labels": {
+            "org.opencontainers.image.source": "https://github.com/o/r",
+            "org.opencontainers.image.revision": source,
+        },
+        "definition": {
+            "vectorSearch": {
+                "vectorizers": [
+                    {
+                        "azureOpenAIParameters": {
+                            "deploymentId": "embedding",
+                            "resourceUri": "https://shared-ai.cognitiveservices.azure.com",
+                        }
+                    }
+                ]
+            }
+        },
+        "provider": (
+            "MaxOutputTokenCount = 256\n"
+            "messages.Add(new SystemChatMessage(\n"
+            '    """\n'
+            "    canned answer prompt\n"
+            '    """\n'
+            "))\n"
+            "new ChatCompletionOptions\n"
+        ),
     }
-    provider = (
-        "MaxOutputTokenCount = 256\n"
-        "messages.Add(new SystemChatMessage(\n"
-        '    """\n'
-        "    canned answer prompt\n"
-        '    """\n'
-        "))\n"
-        "new ChatCompletionOptions\n"
-    )
-    if mutation == "image":
-        app["template"]["containers"][0]["image"] = "mutable:tag"
-    elif mutation == "revision":
-        app["latestRevisionName"] = "unready"
-    elif mutation == "source":
-        labels["org.opencontainers.image.source"] = "https://github.com/other/repo"
-    elif mutation == "kb":
-        rows[0]["url"] = rows[0]["url"].replace(source, "main")
-    elif mutation == "chunk":
-        rows[0]["content"] += " changed"
-    elif mutation == "vectorizer":
-        definition["vectorSearch"]["vectorizers"][0]["azureOpenAIParameters"][
-            "deploymentId"
-        ] = "other"
-    elif mutation == "cap":
-        provider = "new ChatCompletionOptions"
 
     def metadata(*args):
         if args[:2] == ("git", "rev-parse"):
             return source
         if args[:2] == ("git", "show"):
-            return provider
+            return state["provider"]
         if args[:2] == ("docker", "pull"):
             return ""
         if args[:3] == ("docker", "image", "inspect"):
-            return json.dumps(labels)
+            return json.dumps(state["labels"])
         if args[:3] == ("az", "containerapp", "show"):
-            return json.dumps({"properties": app})
+            return json.dumps({"properties": state["app"]})
         if args[:2] == ("az", "rest"):
             url = args[args.index("--url") + 1]
-            return json.dumps({"value": rows} if "/docs?" in url else definition)
+            return json.dumps(
+                {"value": state["rows"]} if "/docs?" in url else state["definition"]
+            )
         if args[:2] == ("az", "cognitiveservices"):
             return json.dumps(
                 {
@@ -671,19 +661,86 @@ def test_capture_binds_canned_deployment_and_exact_kb(monkeypatch, mutation):
             )
         pytest.fail(f"unexpected metadata command {args[0]}")
 
+    return state, metadata
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["none", "image", "revision", "source", "kb", "chunk", "vectorizer", "cap"],
+)
+def test_capture_binds_canned_deployment_and_exact_kb(monkeypatch, mutation):
+    import release
+
+    state, metadata = canned_release(monkeypatch)
+    if mutation == "image":
+        state["app"]["template"]["containers"][0]["image"] = "mutable:tag"
+    elif mutation == "revision":
+        state["app"]["latestRevisionName"] = "unready"
+    elif mutation == "source":
+        state["labels"]["org.opencontainers.image.source"] = (
+            "https://github.com/other/repo"
+        )
+    elif mutation == "kb":
+        state["rows"][0]["url"] = state["rows"][0]["url"].replace("a" * 40, "main")
+    elif mutation == "chunk":
+        state["rows"][0]["content"] += " changed"
+    elif mutation == "vectorizer":
+        state["definition"]["vectorSearch"]["vectorizers"][0]["azureOpenAIParameters"][
+            "deploymentId"
+        ] = "other"
+    elif mutation == "cap":
+        state["provider"] = "new ChatCompletionOptions"
+
     monkeypatch.setattr(release, "command", metadata)
     if mutation == "none":
         import hashlib
 
         candidate = release.capture(["app", "kb"])
-        assert candidate["image"] == image
-        assert candidate["document_count"] == len(rows)
-        assert candidate["source_commit"] == source
-        assert candidate["kb_source_commit"] == source
+        assert candidate["image"] == "ghcr.io/o/r@sha256:" + "b" * 64
+        assert candidate["document_count"] == len(state["rows"])
+        assert candidate["source_commit"] == "a" * 40
+        assert candidate["kb_source_commit"] == "a" * 40
         assert (
             candidate["answer_prompt_sha256"]
-            == hashlib.sha256(release.answer_prompt(provider).encode()).hexdigest()
+            == hashlib.sha256(
+                release.answer_prompt(state["provider"]).encode()
+            ).hexdigest()
         )
     else:
         with pytest.raises(ProduceError):
+            release.capture(["app", "kb"])
+
+
+@pytest.mark.parametrize(
+    ("revisions", "passes"),
+    [
+        pytest.param(["main"], False, id="all-main"),
+        pytest.param(["release/2026"], False, id="all-branch-name"),
+        pytest.param(["a" * 40, "c" * 40], False, id="alternating-shas"),
+        pytest.param(["abc1234"], False, id="all-short-sha"),
+        pytest.param(["a" * 40], True, id="shared-sha-passes"),
+    ],
+)
+def test_capture_demands_one_immutable_kb_source_revision(
+    monkeypatch, revisions, passes
+):
+    import release
+
+    state, metadata = canned_release(monkeypatch)
+    rows = state["rows"]
+    assert rows
+    for index, row in enumerate(rows):
+        revision = revisions[index % len(revisions)]
+        row["url"] = row["url"].replace(
+            "/blob/" + "a" * 40 + "/", f"/blob/{revision}/", 1
+        )
+
+    monkeypatch.setattr(release, "command", metadata)
+    if passes:
+        candidate = release.capture(["app", "kb"])
+        assert candidate["kb_source_commit"] == "a" * 40
+    else:
+        with pytest.raises(
+            ProduceError, match="index citations lack one immutable KB source revision"
+        ):
             release.capture(["app", "kb"])

@@ -3,12 +3,44 @@
 import argparse
 import json
 import os
+import re
+import subprocess
 import sys
+from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from pathlib import Path
 
 from .chunking import chunk_kb
 from .push import EMBEDDING_DEPLOYMENT, INDEX_NAME
+
+
+def _head_sha() -> str:
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ValueError(
+            "cannot resolve the citation revision: pass --ref <full 40-hex commit SHA>"
+        ) from error
+    return completed.stdout.strip()
+
+
+def resolve_source_ref(
+    explicit: str | None = None,
+    *,
+    env: Mapping[str, str] = os.environ,
+    head_sha: Callable[[], str] = _head_sha,
+) -> str:
+    candidate = (
+        explicit if explicit is not None else (env.get("GITHUB_SHA") or head_sha())
+    )
+    if not re.fullmatch(r"[0-9a-f]{40}", candidate):
+        raise ValueError(
+            "citation revision must be a full 40-hex commit SHA, got "
+            f"{candidate!r}: a mutable ref would drift out of the index"
+        )
+    return candidate
 
 
 def main() -> None:
@@ -25,7 +57,13 @@ def main() -> None:
     parser.add_argument(
         "--repo", default="owner/repo", help="GitHub repository for citation URLs"
     )
-    parser.add_argument("--ref", default="main", help="Git revision for citation URLs")
+    parser.add_argument(
+        "--ref",
+        default=None,
+        help="commit SHA the citation URLs pin to; defaults to GITHUB_SHA, "
+        "else the HEAD of the current repository; must be a full 40-hex "
+        "SHA — a mutable ref fails the run",
+    )
     parser.add_argument(
         "--prefix",
         default=os.environ.get("NAME_PREFIX", ""),
@@ -61,7 +99,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    chunks = chunk_kb(args.kb, args.repo, args.ref)
+    try:
+        source_ref = resolve_source_ref(args.ref)
+    except ValueError as error:
+        parser.error(str(error))
+
+    chunks = chunk_kb(args.kb, args.repo, source_ref)
 
     if args.dry_run:
         json.dump(

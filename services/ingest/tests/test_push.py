@@ -17,7 +17,7 @@ CHUNK = Chunk(
     title="Reset your password",
     section="When to use this article",
     content="Follow these steps if you have forgotten your password.",
-    url="https://github.com/acme/it-demo/blob/main/kb/reset-password.md",
+    url="https://github.com/acme/it-demo/blob/0123456789abcdef0123456789abcdef01234567/kb/reset-password.md",
 )
 EMBEDDING = [0.1, 0.2, 0.3]
 
@@ -30,7 +30,7 @@ def test_document_carries_exactly_the_index_fields():
             "id": "reset-password-1",
             "title": "Reset your password",
             "content": "Follow these steps if you have forgotten your password.",
-            "url": "https://github.com/acme/it-demo/blob/main/kb/reset-password.md",
+            "url": "https://github.com/acme/it-demo/blob/0123456789abcdef0123456789abcdef01234567/kb/reset-password.md",
             "embedding": [0.1, 0.2, 0.3],
         }
     ]
