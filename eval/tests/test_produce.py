@@ -621,7 +621,15 @@ def test_capture_binds_canned_deployment_and_exact_kb(monkeypatch, mutation):
             ]
         }
     }
-    provider = "MaxOutputTokenCount = 256; new ChatCompletionOptions"
+    provider = (
+        "MaxOutputTokenCount = 256\n"
+        "messages.Add(new SystemChatMessage(\n"
+        '    """\n'
+        "    canned answer prompt\n"
+        '    """\n'
+        "))\n"
+        "new ChatCompletionOptions\n"
+    )
     if mutation == "image":
         app["template"]["containers"][0]["image"] = "mutable:tag"
     elif mutation == "revision":
@@ -665,11 +673,17 @@ def test_capture_binds_canned_deployment_and_exact_kb(monkeypatch, mutation):
 
     monkeypatch.setattr(release, "command", metadata)
     if mutation == "none":
+        import hashlib
+
         candidate = release.capture(["app", "kb"])
         assert candidate["image"] == image
         assert candidate["document_count"] == len(rows)
         assert candidate["source_commit"] == source
         assert candidate["kb_source_commit"] == source
+        assert (
+            candidate["answer_prompt_sha256"]
+            == hashlib.sha256(release.answer_prompt(provider).encode()).hexdigest()
+        )
     else:
         with pytest.raises(ProduceError):
             release.capture(["app", "kb"])

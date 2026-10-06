@@ -7,7 +7,7 @@
     "answer_image": "ghcr.io/ludvigalden/copilot-azure-demo:8bdbb10f10edde0dcca735107d7aafbd3d12d280",
     "retrieval": "the production retrieval path inside the deployed app: hybrid full-text plus server-vectorized text query with semantic ranking over the knowledge-base index (three chunks per answer)",
     "dataset": {
-      "path": "/root/Code/ludvigalden/copilot-azure-demo/eval/golden.jsonl",
+      "path": "eval/golden.jsonl",
       "sha256": "db900a323887b8f9e4ba4ade69ad069c9adce036ffb90bc0058055cd15205373",
       "questions": 15
     },

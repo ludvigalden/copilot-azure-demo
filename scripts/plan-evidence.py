@@ -14,9 +14,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "eval"))
 from gate import FRESHNESS_TTL_SECONDS
 
 
+COMPONENTS = ("app", "kb", "infra", "power_platform", "evaluation")
+
+
+def canonical_components(components: list[str]) -> list[str]:
+    """Reject unknown or repeated components and return them sorted."""
+    unknown = [name for name in components if name not in COMPONENTS]
+    if unknown:
+        raise ValueError(f"unknown plan components: {', '.join(unknown)}")
+    if len(set(components)) != len(components):
+        raise ValueError("repeated plan components")
+    return sorted(components)
+
+
 def candidate_hash(source: str, run_id: str, attempt: str, components: list[str]) -> str:
     identity = {"source_commit": source, "run_id": run_id, "run_attempt": attempt,
-                "components": sorted(components)}
+                "components": canonical_components(components)}
     return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 

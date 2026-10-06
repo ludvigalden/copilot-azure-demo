@@ -482,8 +482,9 @@ jobs:
   deploy-production:
     needs: [release-summary, app-release]
     if: >-
-      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.release-summary.result ==
-      'success' && needs.app-release.result == 'success' && !github.event.act
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
+      needs.release-summary.result == 'success' && needs.app-release.result == 'success' &&
+      !github.event.act
     runs-on: ubuntu-latest
     environment:
       name: demo
@@ -600,8 +601,9 @@ jobs:
   infra-apply:
     needs: [changes, release-summary, infra-release]
     if: >-
-      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.release-summary.result ==
-      'success' && needs.infra-release.result == 'success' && !github.event.act
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
+      needs.release-summary.result == 'success' && needs.infra-release.result == 'success' &&
+      !github.event.act
     runs-on: ubuntu-latest
     environment:
       name: demo
@@ -735,8 +737,9 @@ jobs:
     needs: [release-summary, ingest-release, app-release]
     if: >-
       !cancelled() && !failure() &&
-      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.release-summary.result ==
-      'success' && needs.ingest-release.result == 'success' && !github.event.act
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
+      needs.release-summary.result == 'success' && needs.ingest-release.result == 'success' &&
+      !github.event.act
     runs-on: ubuntu-latest
     environment:
       name: demo
@@ -805,8 +808,9 @@ jobs:
   pp-production:
     needs: [release-summary, pp-release]
     if: >-
-      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.release-summary.result ==
-      'success' && needs.pp-release.result == 'success' && !github.event.act
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
+      needs.release-summary.result == 'success' && needs.pp-release.result == 'success' &&
+      !github.event.act
     runs-on: ubuntu-latest
     environment:
       name: demo

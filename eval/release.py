@@ -27,6 +27,8 @@ sys.modules[spec.name] = chunking
 spec.loader.exec_module(chunking)
 chunk_kb = chunking.chunk_kb
 
+ANSWER_PROMPT_SOURCE = "services/api/ItSupport.Api/Answers/AzureRagAnswerProvider.cs"
+
 DEADLINE: float | None = None
 
 
@@ -70,6 +72,33 @@ def normalized_rows(rows: list[dict]) -> list[dict]:
     if len({row["id"] for row in normalized}) != len(normalized):
         raise produce.ProduceError("duplicate indexed chunk")
     return sorted(normalized, key=lambda row: row["id"])
+
+
+def answer_prompt(source: str) -> str:
+    """Extract exactly the system prompt the deployed source compiles."""
+    match = re.search(
+        r'new SystemChatMessage\(\s*"""\n(.*?)\n([ \t]*)"""', source, re.DOTALL
+    )
+    if match is None:
+        raise produce.ProduceError("deployed answer source lacks the answer prompt")
+    lines = match.group(1).split("\n")
+    if any(line and not line.startswith(match.group(2)) for line in lines):
+        raise produce.ProduceError(
+            "deployed answer prompt indentation differs from its closing delimiter"
+        )
+    return "\n".join(line.removeprefix(match.group(2)) for line in lines)
+
+
+def authoritative_source_hashes() -> dict[str, str]:
+    """Digests of the local sources every candidate must carry."""
+    return {
+        "dataset_sha256": hashlib.sha256(
+            produce.DEFAULT_DATASET.read_bytes()
+        ).hexdigest(),
+        "judge_prompt_sha256": hashlib.sha256(
+            produce.JUDGE_PROMPT_TEMPLATE.encode()
+        ).hexdigest(),
+    }
 
 
 def capture(components: list[str]) -> dict:
@@ -260,9 +289,7 @@ def capture(components: list[str]) -> dict:
         ).hexdigest(),
         "document_count": len(rows),
         "embedding_model": embedding_model,
-        "dataset_sha256": hashlib.sha256(
-            produce.DEFAULT_DATASET.read_bytes()
-        ).hexdigest(),
+        **authoritative_source_hashes(),
         "source_commit": source,
         "kb_tree": command("git", "rev-parse", "HEAD:kb"),
         "kb_source_commit": kb_source,
@@ -276,9 +303,8 @@ def capture(components: list[str]) -> dict:
         "chat_deployment": chat,
         "embedding_deployment": embedding,
         "chat_model": model,
-        "answer_prompt_sha256": hashlib.sha256(provider.encode()).hexdigest(),
-        "judge_prompt_sha256": hashlib.sha256(
-            produce.JUDGE_PROMPT_TEMPLATE.encode()
+        "answer_prompt_sha256": hashlib.sha256(
+            answer_prompt(provider).encode()
         ).hexdigest(),
         "judge_host": f"{shared}-ai.cognitiveservices.azure.com",
         "judge_api_version": produce.DEFAULT_JUDGE_API_VERSION,
@@ -289,18 +315,15 @@ def capture(components: list[str]) -> dict:
 
 
 def verify(document: dict, candidate: dict) -> None:
+    local = authoritative_source_hashes()
     if (
         not isinstance(candidate, dict)
-        or candidate.get("dataset_sha256")
-        != hashlib.sha256(produce.DEFAULT_DATASET.read_bytes()).hexdigest()
+        or candidate.get("dataset_sha256") != local["dataset_sha256"]
     ):
         raise produce.ProduceError(
             "candidate dataset differs from authoritative source"
         )
-    if (
-        candidate.get("judge_prompt_sha256")
-        != hashlib.sha256(produce.JUDGE_PROMPT_TEMPLATE.encode()).hexdigest()
-    ):
+    if candidate.get("judge_prompt_sha256") != local["judge_prompt_sha256"]:
         raise produce.ProduceError(
             "candidate judge prompt differs from authoritative source"
         )
