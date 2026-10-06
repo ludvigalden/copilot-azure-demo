@@ -492,11 +492,12 @@ jobs:
   # waits on the demo environment's required reviewer, who has seen
   # the release identity above.
   deploy-production:
-    needs: [release-summary, app-release]
+    needs: [changes, release-summary, app-release]
     if: >-
-      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
-      needs.release-summary.result == 'success' && needs.app-release.result == 'success' &&
-      !github.event.act
+      always() && !failure() && !cancelled() &&
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && !github.event.act &&
+      needs.changes.outputs.app == 'true' &&
+      needs.release-summary.result == 'success'
     runs-on: ubuntu-latest
     environment:
       name: demo
@@ -613,9 +614,10 @@ jobs:
   infra-apply:
     needs: [changes, release-summary, infra-release]
     if: >-
-      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
-      needs.release-summary.result == 'success' && needs.infra-release.result == 'success' &&
-      !github.event.act
+      always() && !failure() && !cancelled() &&
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && !github.event.act &&
+      needs.changes.outputs.infra == 'true' &&
+      needs.release-summary.result == 'success'
     runs-on: ubuntu-latest
     environment:
       name: demo
@@ -746,12 +748,12 @@ jobs:
   # retrieval-checked first, production filled only under the demo environment's
   # approval.
   ingest-production:
-    needs: [release-summary, ingest-release, app-release]
+    needs: [changes, release-summary, ingest-release, app-release]
     if: >-
-      !cancelled() && !failure() &&
-      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
-      needs.release-summary.result == 'success' && needs.ingest-release.result == 'success' &&
-      !github.event.act
+      always() && !failure() && !cancelled() &&
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && !github.event.act &&
+      needs.changes.outputs.kb == 'true' &&
+      needs.release-summary.result == 'success'
     runs-on: ubuntu-latest
     environment:
       name: demo
@@ -818,11 +820,12 @@ jobs:
   # uploaded artifact, unpacks it, points the connector and the deployment
   # settings at the production host, and imports that.
   pp-production:
-    needs: [release-summary, pp-release]
+    needs: [changes, release-summary, pp-release]
     if: >-
-      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
-      needs.release-summary.result == 'success' && needs.pp-release.result == 'success' &&
-      !github.event.act
+      always() && !failure() && !cancelled() &&
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && !github.event.act &&
+      needs.changes.outputs.power_platform == 'true' &&
+      needs.release-summary.result == 'success'
     runs-on: ubuntu-latest
     environment:
       name: demo

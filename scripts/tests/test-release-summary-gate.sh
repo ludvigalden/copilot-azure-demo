@@ -219,6 +219,53 @@ for name in production_legs:
         f"the {name} leg would run while the release summary is skipped",
     )
 
+# (e1) each production leg gates on the fail-closed summary and its own
+# selection output, never on a reusable-workflow call result whose
+# internally skipped jobs poison the caller-level needs-result, and it
+# keeps the demo environment binding.
+production_gates = {
+    "deploy-production": "app",
+    "infra-apply": "infra",
+    "ingest-production": "kb",
+    "pp-production": "power_platform",
+}
+for name, selector in production_gates.items():
+    job = jobs.get(name) or {}
+    leg_if = str(job.get("if") or "")
+    leg_needs = job.get("needs") or []
+    if isinstance(leg_needs, str):
+        leg_needs = [leg_needs]
+    gate_terms = [
+        "always()", "!failure()", "!cancelled()", "!github.event.act",
+        f"needs.changes.outputs.{selector} == 'true'",
+        "needs.release-summary.result == 'success'",
+    ]
+    for term in gate_terms:
+        check(
+            term in leg_if,
+            f"the {name} condition lost {term!r}",
+        )
+    poisoned_calls = [
+        "needs.app-release.result", "needs.ingest-release.result",
+        "needs.infra-release.result", "needs.pp-release.result",
+        "needs.validate.result",
+    ]
+    for term in poisoned_calls:
+        check(
+            term not in leg_if,
+            f"the {name} condition still gates on the reusable call {term}",
+        )
+    check(
+        "release-summary" in leg_needs and "changes" in leg_needs,
+        f"the {name} leg does not need the summary and the selection",
+    )
+    leg_env = job.get("environment") or {}
+    check(
+        leg_env.get("name") == "demo"
+        and str(leg_env.get("url") or "").startswith("https://"),
+        f"the {name} leg lost the demo environment binding",
+    )
+
 # (f) the app workflow's release legs gate on the trusted caller-event
 # expression, the dead workflow_call gate is gone, and the pull-request
 # build and the reusable-call trigger survive.
@@ -405,7 +452,8 @@ control_results = {"changes": True, "validate": True, "release-summary": True,
 check(job_runs(mutated, control_results, control_outputs, event="pull_request"),
       "trust-gate mutation was not detected by the PR negative control")
 mutated = dict(jobs["ingest-production"])
-mutated["if"] = str(mutated["if"]).replace("!cancelled() && !failure() &&", "")
+mutated["if"] = str(mutated["if"]).replace(
+    "always() && !failure() && !cancelled() &&", "")
 check(not job_runs(mutated, control_results, control_outputs),
       "implicit-skip mutation was not detected by the KB-only negative control")
 check(job_runs(jobs["ingest-production"], control_results, control_outputs),
