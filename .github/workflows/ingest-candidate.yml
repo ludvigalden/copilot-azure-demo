@@ -165,7 +165,7 @@ jobs:
           INDEX_NAME: ${{ vars.INDEX_NAME }}
         run: |
           index_name="${INDEX_NAME:-kb}"
-          url="$(printf 'https://%s-srch.search.windows.net/indexes(%s)/docs/$count?api-version=2024-07-01' \
+          url="$(printf 'https://%s-srch.search.windows.net/indexes('\''%s'\'')/docs/$count?api-version=2024-07-01' \
             "$SHARED_PREFIX" "$index_name")"
           count="$(az rest --method GET \
             --url "$url" \

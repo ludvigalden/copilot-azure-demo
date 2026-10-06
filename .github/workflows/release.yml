@@ -28,6 +28,10 @@ on:
         description: 'Intentionally release the app component from this ref'
         type: boolean
         default: false
+      release_kb:
+        description: 'Intentionally release the knowledge base from this ref'
+        type: boolean
+        default: false
 
 permissions:
   contents: read

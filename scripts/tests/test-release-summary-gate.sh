@@ -261,6 +261,15 @@ check(
     release_app.get("default") is False,
     "the release_app dispatch input does not default to false",
 )
+release_kb = dispatch_inputs.get("release_kb") or {}
+check(
+    release_kb.get("type") == "boolean",
+    "the release_kb dispatch input is not a boolean",
+)
+check(
+    release_kb.get("default") is False,
+    "the release_kb dispatch input does not default to false",
+)
 
 # (h) the changes job refuses off-main dispatches as its first step,
 # adds the app selection only behind an explicit release_app dispatch,
@@ -295,6 +304,7 @@ for arm in ("services/api/*|apps/web/*|contracts/*|Dockerfile|"
 dispatch_guards = [
     '[ "${{ github.event_name }}" = "workflow_dispatch" ]',
     '[ "${{ github.event.inputs.release_app }}" = "true" ]',
+    '[ "${{ github.event.inputs.release_kb }}" = "true" ]',
 ]
 for term in dispatch_guards:
     check(term in filter_run,
@@ -312,6 +322,11 @@ check(
     and '"push_paths"' in identity_run,
     "the manifest does not record the selection source",
 )
+check(
+    '$release_kb_selected == "true"' in identity_run
+    and "RELEASE_KB_SELECTED" in identity_run,
+    "the selection source does not consider the release_kb dispatch input",
+)
 summary_step = next(
     (s for s in steps if "Selected components" in str(s.get("run") or "")),
     {},
@@ -321,6 +336,10 @@ check(
     "dispatch_input (intentional release)" in summary_run
     and "push_paths" in summary_run,
     "the summary does not distinguish an intentional dispatch release",
+)
+check(
+    '[ "$RELEASE_KB_SELECTED" = "true" ]' in summary_run,
+    "the summary branch does not fire on a release_kb dispatch",
 )
 
 # Model GitHub's implicit success() guard, including skipped dependencies.
@@ -653,6 +672,12 @@ else
         || fail "the release_app input is not declared boolean (grep fallback)"
     grep -q "default: false" "$workflow" \
         || fail "the release_app input does not default to false (grep fallback)"
+    grep -q "release_kb:" "$workflow" \
+        || fail "the release_kb dispatch input is missing (grep fallback)"
+    grep -A2 "release_kb:" "$workflow" | grep -q "type: boolean" \
+        || fail "the release_kb input is not declared boolean (grep fallback)"
+    grep -A2 "release_kb:" "$workflow" | grep -q "default: false" \
+        || fail "the release_kb input does not default to false (grep fallback)"
     grep -q "Refuse intentional releases off main" "$body" \
         || fail "the off-main refusal step is missing (grep fallback)"
     grep -q "github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'" "$body" \
@@ -663,6 +688,9 @@ else
     # shellcheck disable=SC2016
     grep -q '"${{ github.event.inputs.release_app }}" = "true"' "$body" \
         || fail "the release_app selection guard is missing (grep fallback)"
+    # shellcheck disable=SC2016
+    grep -q '"${{ github.event.inputs.release_kb }}" = "true"' "$body" \
+        || fail "the release_kb selection guard is missing (grep fallback)"
     grep -q "services/ingest/\*)" "$body" \
         || fail "the kb changed-path arm is missing (grep fallback)"
     grep -q "infra/terraform/main/\*)" "$body" \

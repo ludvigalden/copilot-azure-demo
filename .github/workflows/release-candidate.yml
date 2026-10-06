@@ -27,7 +27,7 @@ jobs:
       - name: Refuse intentional releases off main
         if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
         run: |
-          echo "refusing an intentional release_app dispatch off main:" >&2
+          echo "refusing an intentional release_app/release_kb dispatch off main:" >&2
           echo "  github.ref = ${{ github.ref }} (only refs/heads/main may release by hand)" >&2
           exit 1
 
@@ -81,6 +81,13 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] &&
             [ "${{ github.event.inputs.release_app }}" = "true" ]; then
             app_changed=true
+          fi
+
+          # An explicit release_kb dispatch only ever adds the kb
+          # selection; it never falsifies what the paths changed.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] &&
+            [ "${{ github.event.inputs.release_kb }}" = "true" ]; then
+            kb_changed=true
           fi
 
           {
@@ -318,6 +325,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           TRIGGER: ${{ github.event_name }}
           RELEASE_APP_SELECTED: ${{ github.event.inputs.release_app }}
+          RELEASE_KB_SELECTED: ${{ github.event.inputs.release_kb }}
         run: |
           image_value=""
           if [ -n "$APP_DIGEST" ]; then
@@ -352,6 +360,7 @@ jobs:
             --arg run_url "$RUN_URL" \
             --arg trigger "$TRIGGER" \
             --arg release_app_selected "$RELEASE_APP_SELECTED" \
+            --arg release_kb_selected "$RELEASE_KB_SELECTED" \
             --arg app_selected "$APP_SELECTED" \
             --arg kb_selected "$KB_SELECTED" \
             --arg infra_selected "$INFRA_SELECTED" \
@@ -402,7 +411,8 @@ jobs:
                   else "skipped_not_configured" end)
               },
               trigger: $trigger,
-              selection_source: (if $release_app_selected == "true" then "dispatch_input" else "push_paths" end),
+              selection_source: (if ($release_app_selected == "true" or
+                $release_kb_selected == "true") then "dispatch_input" else "push_paths" end),
               run_url: $run_url
             }' > release-identity.json
           cat release-identity.json
@@ -447,7 +457,7 @@ jobs:
               "embedding ${EMBEDDING_DEPLOYMENT_NAME:-embedding}"
             echo "- Selected components: app $APP_SELECTED, kb $KB_SELECTED," \
               "infra $INFRA_SELECTED, power_platform $PP_SELECTED"
-            if [ "$RELEASE_APP_SELECTED" = "true" ]; then
+            if [ "$RELEASE_APP_SELECTED" = "true" ] || [ "$RELEASE_KB_SELECTED" = "true" ]; then
               echo "- Trigger: workflow_dispatch; selection source: dispatch_input (intentional release)"
             else
               echo "- Trigger: $TRIGGER; selection source: push_paths"
