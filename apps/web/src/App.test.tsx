@@ -3,13 +3,14 @@
 // Request and the recording fetch that openapi-fetch's createClient captures
 // at client creation. See test-support.ts.
 import "./test-support"
-import { FluentProvider, webLightTheme } from "@fluentui/react-components"
+import { FluentProvider } from "@fluentui/react-components"
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { App } from "./App"
 import { api, ReauthRequiredError } from "./api/client"
 import { API_ORIGIN, clearFetchLog, fetchLog, setFetchImpl } from "./test-support"
+import { appTheme } from "./theme"
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -57,7 +58,7 @@ function renderApp(props: Partial<Parameters<typeof App>[0]> = {}): ReturnType<t
   root = createRoot(container)
   act(() => {
     root?.render(
-      <FluentProvider theme={webLightTheme}>
+      <FluentProvider theme={appTheme}>
         <App signIn={signIn} signOut={signOut} continueAsGuest={continueAsGuest} {...props} />
       </FluentProvider>,
     )
@@ -96,6 +97,7 @@ function surface() {
       })
     },
     alert: () => container?.querySelector('[role="alert"]')?.textContent ?? null,
+    status: () => container?.querySelector('[role="status"]')?.textContent ?? null,
   }
 }
 
@@ -132,6 +134,60 @@ describe("App at the component and auth boundary", () => {
     }
     document.body.innerHTML = ""
   })
+
+  it.each([
+    ["Ask", "/api/answers", "Finding an answer…", "Answer ready."],
+    ["Escalate to IT", "/api/tickets", "Opening your ticket…", `Ticket ${TICKET.number} opened.`],
+  ])(
+    "keeps %s pending status accessible with reduced-motion slot rules",
+    async (label, path, pending, ready) => {
+      let release: ((response: Response) => void) | undefined
+      setFetchImpl((request) =>
+        new URL(request.url).pathname === path
+          ? new Promise<Response>((resolve) => {
+              release = resolve
+            })
+          : jsonResponse(PROFILE),
+      )
+      const s = renderApp()
+      await flush()
+      const status = container?.querySelector('[role="status"]')
+      expect(container?.querySelector(".fui-Spinner")).toBeNull()
+      await s.type("Password reset")
+      await s.click(label)
+      expect(release).toBeTypeOf("function")
+      expect(s.status()).toBe(pending)
+      expect(status?.getAttribute("aria-live")).toBe("polite")
+      expect(container?.querySelector(".fui-Spinner")?.getAttribute("aria-hidden")).toBe("true")
+      for (const slot of ["spinner", "spinnerTail"]) {
+        const element = container?.querySelector(`.fui-Spinner__${slot}`)
+        expect(element).toBeTruthy()
+        const rules = [...document.styleSheets]
+          .flatMap((sheet) => [...sheet.cssRules])
+          .filter(
+            (rule): rule is CSSMediaRule =>
+              rule instanceof CSSMediaRule &&
+              rule.conditionText.includes("prefers-reduced-motion: reduce"),
+          )
+          .flatMap((rule) => [...rule.cssRules])
+          .filter(
+            (rule): rule is CSSStyleRule =>
+              rule instanceof CSSStyleRule && !!element?.matches(rule.selectorText),
+          )
+        expect(rules.some((rule) => rule.style.getPropertyValue("animation-name") === "none")).toBe(
+          true,
+        )
+        expect(
+          rules.some((rule) => rule.style.getPropertyValue("animation-duration") === "0s"),
+        ).toBe(true)
+      }
+      await act(async () => release?.(jsonResponse(path === "/api/answers" ? ANSWER : TICKET)))
+      await flush()
+      expect(s.status()).toBe(ready)
+      expect(container?.querySelector('[role="status"]')).toBe(status)
+      expect(container?.querySelector(".fui-Spinner")).toBeNull()
+    },
+  )
 
   it("renders an anonymous caller as a guest with a sign-in affordance, fetched tokenless", async () => {
     useMiddleware(() => {}) // passthrough: no bootstrap account, so no renewal
@@ -346,6 +402,26 @@ describe("App at the component and auth boundary", () => {
     await flush()
     expect(s.alert()).toContain("Could not load your profile.")
     expect(s.has("Jane Doe")).toBe(false)
+  })
+
+  it("labels the question and keeps answer, sources, then escalation in reading order", async () => {
+    const s = renderApp()
+    await flush()
+    const area = container?.querySelector("textarea")
+    expect(area?.labels?.[0]?.textContent).toBe("Your IT question")
+    expect(container?.querySelector("h1")?.textContent).toBe("IT Support Assistant")
+    await s.type("How do I reset my password?")
+    await s.click("Ask")
+    const headings = [...(container?.querySelectorAll("h2, h3") ?? [])].map(
+      (heading) => heading.textContent,
+    )
+    expect(headings).toEqual(["Ask a question", "Answer", "Sources", "Need more help?"])
+    expect(s.status()).toContain("Answer ready")
+    expect(container?.querySelector('a[href="https://kb.example/reset"]')?.textContent).toContain(
+      "Password reset",
+    )
+    await s.click("Escalate to IT")
+    expect(s.status()).toContain(TICKET.number)
   })
 
   it("keeps the FluentProvider root above the app surface", () => {

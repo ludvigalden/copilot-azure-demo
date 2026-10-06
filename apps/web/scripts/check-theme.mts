@@ -18,6 +18,10 @@ type ProbeState = {
   tokenBrandBackground: string
   providerFontFamilyBase: string
   providerBrandBackground: string
+  controlRadius: string
+  surfaceRadius: string
+  neutralBackground: string
+  neutralForeground: string
 }
 
 type Evaluated = {
@@ -26,8 +30,7 @@ type Evaluated = {
 }
 
 function fail(message: string): never {
-  console.error(`FAIL: ${message}`)
-  process.exit(1)
+  throw new Error(`FAIL: ${message}`)
 }
 
 function findBrowser(): string {
@@ -75,8 +78,8 @@ function connect(url: string): Promise<WebSocket> {
 
 let nextMessageId = 1
 
-/** One Runtime.evaluate round trip, resolved with the raw CDP reply. */
-function evaluate(socket: WebSocket, expression: string): Promise<Evaluated> {
+/** One CDP round trip, resolved with the raw reply. */
+function command(socket: WebSocket, method: string, params: object): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const id = nextMessageId++
     const onMessage = (event: MessageEvent) => {
@@ -88,31 +91,91 @@ function evaluate(socket: WebSocket, expression: string): Promise<Evaluated> {
       }
       if (message.id !== id) return
       socket.removeEventListener("message", onMessage)
-      // awaitPromise+returnByValue puts the settled value at
-      // result.result.value; rejections report via result.exceptionDetails
-      // (top level stays unset, value {}), so read the rejection first.
-      const remote = message.result?.result as { value?: unknown } | undefined
       if (message.error) reject(new Error(message.error.message))
-      else
-        resolve({
-          value: remote?.value,
-          exceptionDetails: message.result?.exceptionDetails ?? message.exceptionDetails,
-        })
+      else resolve(message.result)
     }
     socket.addEventListener("message", onMessage)
     socket.send(
-      JSON.stringify({
-        id,
-        method: "Runtime.evaluate",
-        params: { expression, awaitPromise: true, returnByValue: true },
-      }),
+      JSON.stringify({ id, method, params }),
     )
   })
 }
 
-/** Runs inside the page: waits for the app surface, then reads computed
- * theme state off a real button and the provider root - inheritance and
- * cascade must resolve, which a style-attribute check cannot prove. */
+async function evaluate(socket: WebSocket, expression: string): Promise<Evaluated> {
+  const reply = await command(socket, "Runtime.evaluate", {
+    expression, awaitPromise: true, returnByValue: true,
+  }) as { result?: { value?: unknown }; exceptionDetails?: Evaluated["exceptionDetails"] }
+  return { value: reply.result?.value, exceptionDetails: reply.exceptionDetails }
+}
+
+// Pending is held at the network boundary via CDP request-stage interception;
+// the app's captured fetch instance is not replaceable after bootstrap.
+const PENDING_PROBE = `(() => new Promise((resolve, reject) => {
+  const deadline = Date.now() + 5000
+  const tick = () => {
+    const root = document.querySelector(".fui-Spinner")
+    if (root) {
+      setTimeout(() => resolve({
+        reduced: matchMedia("(prefers-reduced-motion: reduce)").matches,
+        status: document.querySelector('[role="status"]').textContent,
+        hidden: root.getAttribute("aria-hidden"),
+        slots: [...root.querySelectorAll("span")].flatMap((slot) => [null, "::before", "::after"].map((pseudo) => {
+          const style = getComputedStyle(slot, pseudo)
+          return { pseudo, name: style.animationName, duration: style.animationDuration, iterations: style.animationIterationCount, transition: style.transitionDuration }
+        })),
+        animations: root.getAnimations({ subtree: true }).map((animation) => {
+          const timing = animation.effect.getTiming()
+          return { duration: timing.duration, iterations: String(timing.iterations) }
+        }),
+      }), 250)
+      return
+    }
+    if (Date.now() >= deadline) return reject(new Error("pending Spinner did not mount"))
+    setTimeout(tick, 50)
+  }
+  tick()
+}))()`
+
+type PendingState = {
+  reduced: boolean
+  status: string
+  hidden: string
+  slots: Array<{ pseudo: string | null; name: string; duration: string; iterations: string; transition: string }>
+  animations: Array<{ duration: number | string; iterations: string }>
+}
+
+async function pendingState(socket: WebSocket): Promise<PendingState> {
+  const evaluated = await evaluate(socket, PENDING_PROBE)
+  if (evaluated.exceptionDetails) throw new Error(evaluated.exceptionDetails.exception?.description)
+  const state = evaluated.value as PendingState
+  if (state.hidden !== "true" || !["Finding an answer…", "Opening your ticket…"].includes(state.status)) {
+    throw new Error(`pending announcement missing: ${JSON.stringify(state)}`)
+  }
+  return state
+}
+
+/** Holds API mutations at the browser boundary; returns paused request IDs. */
+async function intercept(socket: WebSocket): Promise<Map<string, string>> {
+  const held = new Map<string, string>()
+  socket.addEventListener("message", (event) => {
+    const message = JSON.parse(String(event.data)) as {
+      method?: string
+      params?: { requestId?: string; request?: { url?: string } }
+    }
+    if (message.method !== "Fetch.requestPaused") return
+    const url = message.params?.request?.url ?? ""
+    const requestId = message.params?.requestId
+    if (requestId === undefined || !url.includes("/api/")) return
+    held.set(new URL(url).pathname, requestId)
+    console.log(`held: ${url}`)
+  })
+  await command(socket, "Fetch.enable", {
+    patterns: [{ urlPattern: "*://*/api/*", requestStage: "Request" }],
+  })
+  return held
+}
+
+/** Reads the computed theme from a rendered button and provider. */
 const PROBE = `(() => new Promise((resolve, reject) => {
   const deadline = Date.now() + 45000
   const tick = () => {
@@ -129,6 +192,10 @@ const PROBE = `(() => new Promise((resolve, reject) => {
         tokenBrandBackground: style.getPropertyValue("--colorBrandBackground").trim(),
         providerFontFamilyBase: providerStyle.getPropertyValue("--fontFamilyBase").trim(),
         providerBrandBackground: providerStyle.getPropertyValue("--colorBrandBackground").trim(),
+        controlRadius: style.borderTopLeftRadius,
+        surfaceRadius: window.getComputedStyle(document.querySelector(".fui-Card")).borderTopLeftRadius,
+        neutralBackground: providerStyle.backgroundColor,
+        neutralForeground: providerStyle.getPropertyValue("--colorNeutralForeground1").trim(),
       })
       return
     }
@@ -210,9 +277,67 @@ async function main(): Promise<void> {
         `the provider root itself computes no theme tokens (fontFamilyBase "${state?.providerFontFamilyBase}", brandBackground "${state?.providerBrandBackground}")`,
       )
     }
-    console.log(
-      `ok: themed surface rendered (font "${state.fontFamily}", fontFamilyBase "${state.tokenFontFamilyBase}", brandBackground "${state.tokenBrandBackground}")`,
-    )
+    const expectedFont = 'system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif'
+    if (
+      state.tokenFontFamilyBase.replace(/,\s*/g, ",") !== expectedFont ||
+      state.providerFontFamilyBase.replace(/,\s*/g, ",") !== expectedFont ||
+      !/^system-ui(?:,|$)/.test(state.fontFamily ?? "") ||
+      state.tokenBrandBackground !== "#0f6cbd" ||
+      state.providerBrandBackground !== "#0f6cbd" ||
+      state.controlRadius !== "6px" ||
+      state.surfaceRadius !== "12px" ||
+      state.neutralBackground !== "rgb(243, 246, 250)" ||
+      state.neutralForeground !== "#202c3a"
+    ) {
+      fail(`the rendered app theme differs from the intended tokens: ${JSON.stringify(state)}`)
+    }
+    console.log(`ok: themed surface rendered ${JSON.stringify(state)}`)
+    await command(socket, "Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
+    })
+    const held = await intercept(socket)
+    await evaluate(socket, `document.querySelector("textarea").focus()`)
+    await command(socket, "Input.insertText", { text: "Pending motion check" })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    await evaluate(socket, `[...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Ask").click()`)
+    const normal = await pendingState(socket)
+    if (normal.reduced || !normal.animations.some((animation) => animation.iterations === "Infinity" && Number(animation.duration) > 0)) {
+      throw new Error(`normal Spinner motion missing: ${JSON.stringify(normal)}`)
+    }
+    await command(socket, "Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+    })
+    const reducedAsk = await pendingState(socket)
+    const answerRequest = held.get("/api/answers")
+    if (!answerRequest) throw new Error("the answer request was not held")
+    await command(socket, "Fetch.fulfillRequest", {
+      requestId: answerRequest,
+      responseCode: 200,
+      responseHeaders: [{ name: "Content-Type", value: "application/json" }],
+      body: Buffer.from(JSON.stringify({ text: "Local motion fixture", citations: [], chunks: [] })).toString("base64"),
+    })
+    const settled = await evaluate(socket, `new Promise((resolve, reject) => {
+      const deadline = Date.now() + 5000
+      const tick = () => {
+        if (!document.querySelector(".fui-Spinner") && document.querySelector('[role="status"]').textContent === "Answer ready.") return resolve(true)
+        if (Date.now() >= deadline) return reject(new Error("held answer did not settle"))
+        setTimeout(tick, 50)
+      }
+      tick()
+    })`)
+    if (settled.exceptionDetails || settled.value !== true) throw new Error("held answer did not settle")
+    await evaluate(socket, `[...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Escalate to IT").click()`)
+    const reducedTicket = await pendingState(socket)
+    if (reducedAsk.status !== "Finding an answer…" || reducedTicket.status !== "Opening your ticket…" || !held.has("/api/tickets")) {
+      throw new Error("both pending request branches must be observed separately")
+    }
+    for (const reduced of [reducedAsk, reducedTicket]) {
+      if (!reduced.reduced || reduced.animations.length > 0 || reduced.slots.some((slot) => slot.name !== "none" || slot.duration !== "0s" || slot.transition !== "0s")) {
+        throw new Error(`reduced-motion Spinner still animates: ${JSON.stringify(reduced)}`)
+      }
+    }
+    console.log(`ok: pending motion rendered ${JSON.stringify({ normal, reducedAsk, reducedTicket })}`)
+    socket.close()
   } finally {
     chrome.kill("SIGKILL")
     rmSync(profile, { recursive: true, force: true })

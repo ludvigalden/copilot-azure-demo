@@ -3,8 +3,11 @@
 // every branch, driving the production entry point. test-support loads
 // first: createClient captures Request and the recording fetch.
 import "./test-support"
+// Side-effect only: initializing the Fluent dependency here keeps its cold
+// module load out of the first test's 5s budget; resetModules below still
+// re-evaluates every real app module for each bootstrap.
+import "@fluentui/react-components"
 import type { PublicClientApplication } from "@azure/msal-browser"
-import { webLightTheme } from "@fluentui/react-components"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { AuthConfig } from "./api/client"
 import { clearFetchLog, setFetchImpl } from "./test-support"
@@ -58,7 +61,11 @@ vi.mock("@azure/msal-browser", () => {
   }
 })
 
-const AUTH: AuthConfig = { clientId: "client-id", tenantId: "tenant-id", scope: "api://demo/access" }
+const AUTH: AuthConfig = {
+  clientId: "client-id",
+  tenantId: "tenant-id",
+  scope: "api://demo/access",
+}
 const PROFILE = { displayName: "Zelda Quartermain", email: "zelda@contoso.example" }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -85,24 +92,23 @@ function themedRoot(): HTMLElement {
   expect(providers).toHaveLength(1)
   const provider = providers[0]
   if (!provider) throw new Error("no FluentProvider root rendered")
-  // jsdom resolves the Fluent theme's custom properties from griffel's
-  // injected stylesheet, so every branch must compute real tokens here.
-  // The rendered-font proof against a real browser stays with the
-  // release gate (scripts/check-theme.mts).
+  // jsdom resolves Fluent tokens from the injected stylesheet.
+  // The release gate checks rendered fonts in a real browser.
   const providerStyle = getComputedStyle(provider)
-  expect(providerStyle.getPropertyValue("--fontFamilyBase").trim()).not.toBe("")
-  expect(providerStyle.getPropertyValue("--colorBrandBackground").trim()).toBe(
-    webLightTheme.colorBrandBackground,
+  expect(providerStyle.getPropertyValue("--fontFamilyBase").trim().replace(/,\s*/g, ",")).toBe(
+    'system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
   )
+  expect(providerStyle.getPropertyValue("--borderRadiusMedium").trim()).toBe("6px")
+  expect(providerStyle.getPropertyValue("--borderRadiusXLarge").trim()).toBe("12px")
+  expect(providerStyle.getPropertyValue("--colorNeutralBackground2").trim()).toBe("#f3f6fa")
+  expect(providerStyle.getPropertyValue("--colorBrandBackground").trim()).toBe("#0f6cbd")
   const ask = [...provider.querySelectorAll("button")].find(
     (button) => (button.textContent ?? "").trim() === "Ask",
   )
   if (ask) {
     const askStyle = getComputedStyle(ask)
     expect(askStyle.getPropertyValue("--fontFamilyBase").trim()).not.toBe("")
-    expect(askStyle.getPropertyValue("--colorBrandBackground").trim()).toBe(
-      webLightTheme.colorBrandBackground,
-    )
+    expect(askStyle.getPropertyValue("--colorBrandBackground").trim()).toBe("#0f6cbd")
   }
   return provider
 }
