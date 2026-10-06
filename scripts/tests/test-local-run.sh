@@ -142,6 +142,30 @@ node -e '
   fs.writeFileSync(process.argv[1], JSON.stringify(probe, null, 2) + "\n")
 ' "$lint_root/apps/web/package.json"
 ln -s "$PWD/apps/web/node_modules" "$lint_root/apps/web/node_modules"
+
+# The python probes: local-run lint also runs CI's ruff format check
+# in each Python project, so the throwaway tree carries both
+# projects' manifests and a format-clean probe, reusing each real
+# checkout's virtualenv through a symlink the same way the web probe
+# reuses node_modules. UV_NO_SYNC keeps that reuse read-only: without
+# it uv would sync the probe tree and try to build its copy of the
+# ingest package into the shared virtualenv.
+command -v uv >/dev/null 2>&1 || {
+    echo "skip: uv is not installed" >&2
+    exit 77
+}
+for project in eval services/ingest; do
+    [ -x "$project/.venv/bin/ruff" ] || {
+        echo "skip: $project is not synced (ruff missing from its venv)" >&2
+        exit 77
+    }
+done
+for project in eval services/ingest; do
+    mkdir -p "$lint_root/$project"
+    cp "$project/pyproject.toml" "$project/uv.lock" "$lint_root/$project/"
+    ln -s "$PWD/$project/.venv" "$lint_root/$project/.venv"
+    printf 'answer = 42\n' >"$lint_root/$project/probe.py"
+done
 git -C "$lint_root" init -q -b main
 
 # The green case: a source file that satisfies every enabled rule.
@@ -151,7 +175,8 @@ export const answer = "all good"
 EOF
 
 lint_green_rc=0
-(cd "$lint_root" && sh scripts/local-run lint) >"$lint_root/green.log" 2>"$lint_root/green.err" \
+(cd "$lint_root" && UV_NO_SYNC=1 sh scripts/local-run lint) \
+    >"$lint_root/green.log" 2>"$lint_root/green.err" \
     || lint_green_rc=$?
 
 # The red case: the same probe with a string single-quoted and a
@@ -163,7 +188,8 @@ export const answer = 'deliberate violation';
 EOF
 
 lint_fail_rc=0
-(cd "$lint_root" && sh scripts/local-run lint) >"$lint_root/fail.log" 2>"$lint_root/fail.err" \
+(cd "$lint_root" && UV_NO_SYNC=1 sh scripts/local-run lint) \
+    >"$lint_root/fail.log" 2>"$lint_root/fail.err" \
     || lint_fail_rc=$?
 
 if [ "$lint_green_rc" -ne 0 ]; then
@@ -194,3 +220,44 @@ if [ "$(tail -n 1 "$lint_root/fail.log")" \
 fi
 
 echo "ok: lint green run exited 0, lint red run exited $lint_fail_rc"
+
+# The python red cases: the same probe with an assignment ruff's
+# formatter would respace, in one project at a time, fails the run
+# the same way even with the web probe clean — proof that each
+# project's format check actually runs.
+cat > "$lint_root/apps/web/src/probe.ts" <<'EOF'
+// A source file that satisfies every enabled rule.
+export const answer = "all good"
+EOF
+for broken in eval services/ingest; do
+    label=$(printf '%s' "$broken" | tr / -)
+    for project in eval services/ingest; do
+        if [ "$project" = "$broken" ]; then
+            printf 'answer=42\n' >"$lint_root/$project/probe.py"
+        else
+            printf 'answer = 42\n' >"$lint_root/$project/probe.py"
+        fi
+    done
+    py_fail_rc=0
+    (cd "$lint_root" && UV_NO_SYNC=1 sh scripts/local-run lint) \
+        >"$lint_root/pyfail-$label.log" 2>"$lint_root/pyfail-$label.err" \
+        || py_fail_rc=$?
+    if [ "$py_fail_rc" -eq 0 ]; then
+        echo "FAIL: the lint command exited 0 with a misformatted $broken probe" >&2
+        tail -n 5 "$lint_root/pyfail-$label.err" >&2
+        exit 1
+    fi
+    if ! grep -q "^local-run: lint exited with status $py_fail_rc\$" \
+        "$lint_root/pyfail-$label.log"; then
+        echo "FAIL: the status line is missing from the failing $broken run" >&2
+        tail -n 5 "$lint_root/pyfail-$label.log" >&2
+        exit 1
+    fi
+    if [ "$(tail -n 1 "$lint_root/pyfail-$label.log")" \
+        != "local-run: lint exited with status $py_fail_rc" ]; then
+        echo "FAIL: the verdict line is not the $broken run's last output line" >&2
+        tail -n 5 "$lint_root/pyfail-$label.log" >&2
+        exit 1
+    fi
+    echo "ok: lint red run with a misformatted $broken probe exited $py_fail_rc"
+done

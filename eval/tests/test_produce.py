@@ -492,9 +492,7 @@ def test_release_negative_controls(tmp_path, monkeypatch, mutation):
             judge_prompt_tokens=149999, judge_completion_tokens=100
         )
     elif mutation == "deadline-over-ceiling":
-        ceiling = produce.RunConfig.__dataclass_fields__[
-            "max_duration_seconds"
-        ].default
+        ceiling = produce.RunConfig.__dataclass_fields__["max_duration_seconds"].default
         document["release_evidence"]["budgets"]["max_duration_seconds"] = ceiling + 1
     elif mutation in ("deadline", "recorded-deadline"):
         limit = 2280 if mutation == "deadline" else 1

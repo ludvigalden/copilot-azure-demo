@@ -13,11 +13,13 @@
 # reach production, and release.yml is not offered here at all.
 # Extra options are passed through to the runner.
 #
-# lint is not a workflow: it runs the exact lint command CI runs on
-# every pull request, on this tree. It needs no secrets and no
-# container daemon, so it never reaches the .env.local gate or the
-# runner. Its exit status is the loop's, reported the same way as the
-# workflows', so a captured log cannot look green after a failed lint.
+# lint is not a workflow: it runs local lint checks on this tree — the
+# SPA's Biome lint, which CI runs on every pull request, and the ruff
+# format check CI's python job runs in each Python project. It needs no
+# secrets and no container daemon, so it never reaches the .env.local
+# gate or the runner. Its exit status is the loop's, reported the same
+# way as the workflows', so a captured log cannot look green after a
+# failed lint.
 #
 # Honesty about the loop: act pulls images from the registry by
 # default — it is not an offline hermetic runner. A locally built
@@ -31,11 +33,15 @@ cd "$(git rev-parse --show-toplevel)"
 
 case "${1:-}" in
     lint)
-        # The exact command CI runs for apps/web. Extra options pass
-        # through to npm, as with the workflows.
+        # The SPA's Biome lint plus CI's ruff format check in each
+        # Python project. Extra options pass through to npm, as with
+        # the workflows. A failing command fails the whole run, and the
+        # verdict line reports the last failing status.
         shift
         rc=0
         npm run lint --prefix apps/web "$@" || rc=$?
+        uv run --directory eval ruff format --check . || rc=$?
+        uv run --directory services/ingest ruff format --check . || rc=$?
         echo "local-run: lint exited with status $rc"
         exit "$rc"
         ;;
