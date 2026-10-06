@@ -1,8 +1,10 @@
 /*
+!.dockerignore
 !.editorconfig
 !.gitattributes
 !.github/
 !Directory.Packages.props
+!Dockerfile
 !ItSupport.slnx
 !LICENSE
 !README.md
@@ -11,6 +13,7 @@
 !docs/
 !dotnet-tools.json
 !eval/
+!infra/
 !kb/
 !scripts/
 !services/
