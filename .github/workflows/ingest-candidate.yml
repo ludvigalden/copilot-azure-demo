@@ -196,7 +196,9 @@ jobs:
     needs: staging-check
     if: github.event_name == 'schedule' && github.ref == 'refs/heads/main' && !github.event.act
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 2400s evaluation deadline (40 min) plus checkout, uv sync, az login
+    # and post-run artifact upload.
+    timeout-minutes: 45
     environment: staging
     permissions:
       contents: read

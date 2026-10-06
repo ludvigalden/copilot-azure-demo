@@ -465,6 +465,7 @@ def test_nested_release_shapes_fail_closed(tmp_path, monkeypatch, field, value):
         "combined",
         "row-attempts",
         "deadline",
+        "deadline-over-ceiling",
         "recorded-deadline",
     ],
 )
@@ -490,8 +491,13 @@ def test_release_negative_controls(tmp_path, monkeypatch, mutation):
         document["run"]["usage"].update(
             judge_prompt_tokens=149999, judge_completion_tokens=100
         )
+    elif mutation == "deadline-over-ceiling":
+        ceiling = produce.RunConfig.__dataclass_fields__[
+            "max_duration_seconds"
+        ].default
+        document["release_evidence"]["budgets"]["max_duration_seconds"] = ceiling + 1
     elif mutation in ("deadline", "recorded-deadline"):
-        limit = 900 if mutation == "deadline" else 1
+        limit = 2280 if mutation == "deadline" else 1
         document["release_evidence"]["budgets"]["max_duration_seconds"] = limit
         document["release_evidence"]["started_at"] = (
             now - timedelta(seconds=limit + 1)

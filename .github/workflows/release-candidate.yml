@@ -165,7 +165,9 @@ jobs:
       (needs.changes.outputs.app == 'true' || needs.changes.outputs.kb == 'true' ||
        needs.changes.outputs.evaluation == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 2400s evaluation deadline (40 min) plus checkout, uv sync, az login
+    # and post-run artifact upload.
+    timeout-minutes: 45
     environment: staging
     permissions:
       contents: read

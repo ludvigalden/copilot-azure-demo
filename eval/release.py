@@ -346,7 +346,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args(argv)
-    DEADLINE = time.monotonic() + 900
+    # Deadline sizing (Actions run 37486347804): 15 x ~120s per question
+    # (117.6s steady + 2.0s pacing) + warm-up + capture + 120s reserve
+    # ~= 1967s measured need; sized to 2400s. Budget ceiling is
+    # 2400 - 120 = 2280.
+    DEADLINE = time.monotonic() + 2400
     try:
         if args.verify_only:
             candidate = json.loads(args.candidate.read_text())

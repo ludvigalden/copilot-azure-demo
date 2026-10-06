@@ -482,7 +482,9 @@ def gate_release_document(
         duration_limit = _resolve(
             document, "release_evidence.budgets.max_duration_seconds"
         )
-        if type(duration_limit) is not int or not 1 <= duration_limit <= 900:
+        # 2280 = the 2400s release DEADLINE minus its 120s reserve; see the
+        # sizing comment in release.py.
+        if type(duration_limit) is not int or not 1 <= duration_limit <= 2280:
             failures.append("invalid evaluation deadline")
         elif (completed - started).total_seconds() > duration_limit:
             failures.append("evaluation exceeded deadline")
@@ -504,7 +506,7 @@ def gate_release_document(
         "judge_max_output_tokens": 300,
         "judge_input_byte_cap": 8000,
         "judge_token_cap": 150000,
-        "max_duration_seconds": 900,
+        "max_duration_seconds": 2280,
     }
     for key, limit in limits.items():
         if (

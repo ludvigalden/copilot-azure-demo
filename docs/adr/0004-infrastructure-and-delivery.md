@@ -166,3 +166,21 @@ the guarantee, backlog retention is not. The distinct component job
 groups (`app-staging`, `ingest-staging`, `infra-staging`,
 `infra-demo`, `deploy-demo`, `pp-staging`, `pp-demo`) remain as
 defense in depth.
+
+## Amendment — 2026-10-06: measured evaluation sizing
+
+Run 37486347804 (evaluation-only push) measured the live question loop:
+warm-up 32.1s, first question 65.8s, then a steady 116.2-119.0s per question
+(mean ~117.6s, answer+judge+capture) across six questions that all passed
+answer and judge with HTTP 200. The 900-second deadline and its 780-second
+produce budget held ~6.5 questions and failed closed at question 7
+("evaluation deadline reached before backoff"); the endpoint was healthy
+throughout, so the miss was capacity, not quality. Fifteen sequential
+questions need ~1,760s of produce wall clock. The deadline is now 2,400
+seconds — 15 x ~120s measured per-question cost (steady state plus pacing)
+plus warm-up, capture and the 120s reserve, with drift headroom — the
+produce budget and the gate's recorded-budget ceiling are
+2,400 - 120 = 2,280 seconds, and both eval-carrying jobs (`release-eval`
+and the weekly `scheduled-eval`) carry `timeout-minutes: 45` (2,400s plus
+checkout, dependency sync, login and upload). Attempt and token caps are
+unchanged: they are sized by the 15-question count, not by the clock.

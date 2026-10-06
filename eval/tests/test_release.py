@@ -1,6 +1,7 @@
 """Hermetic prompt-hash precision and shared source-hash helper controls."""
 
 import hashlib
+import re
 
 import pytest
 
@@ -82,3 +83,35 @@ def test_verify_drift_rejections_use_the_shared_hashes():
         release.verify({}, dict(local, dataset_sha256="0" * 64))
     with pytest.raises(ProduceError, match="judge prompt"):
         release.verify({}, dict(local, judge_prompt_sha256="0" * 64))
+
+
+def test_deadline_sizing_comment_matches_the_code():
+    source = (release.ROOT / "eval" / "release.py").read_text()
+    assignment = re.search(r"DEADLINE = time\.monotonic\(\) \+ (\d+)", source)
+    assert assignment is not None
+    deadline = int(assignment.group(1))
+    sizing = re.search(
+        r"sized to (\d+)s\..*?(\d+) - 120 = (\d+)",
+        source,
+        re.DOTALL,
+    )
+    assert sizing is not None
+    sized, derived_from, ceiling = (int(value) for value in sizing.groups())
+    assert sized == deadline == derived_from
+    assert ceiling == deadline - 120
+    per_question = re.search(r"(\d+) x ~(\d+)s per question", source)
+    assert per_question is not None
+    count, seconds = (int(value) for value in per_question.groups())
+    assert count == len(produce.load_dataset(produce.DEFAULT_DATASET))
+    need = re.search(r"~= (\d+)s measured need", source)
+    assert need is not None
+    assert count * seconds <= int(need.group(1)) <= deadline
+    gate_source = (release.ROOT / "eval" / "gate.py").read_text()
+    enforced = re.search(r"1 <= duration_limit <= (\d+)", gate_source)
+    assert enforced is not None
+    assert int(enforced.group(1)) == ceiling
+    assert f'"max_duration_seconds": {ceiling}' in gate_source
+    produce_source = (release.ROOT / "eval" / "produce.py").read_text()
+    default = re.search(r"max_duration_seconds: int = (\d+)", produce_source)
+    assert default is not None
+    assert int(default.group(1)) == ceiling

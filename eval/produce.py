@@ -223,7 +223,10 @@ class RunConfig:
     candidate: dict[str, Any] | None = None
     run_id: str = ""
     started_at: str = ""
-    max_duration_seconds: int = 900
+    # 2280 = the 2400s release DEADLINE minus its 120s reserve (see the
+    # sizing comment in release.py); the default sizes a local golden run
+    # like a release run.
+    max_duration_seconds: int = 2280
     expires_after_seconds: int = gate.FRESHNESS_TTL_SECONDS
 
 
