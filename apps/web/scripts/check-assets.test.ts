@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { extractAssetUrls, expectedContentTypes } from "./check-assets.mts"
+import { expectedContentTypes, extractAssetUrls } from "./check-assets.mts"
 
 // Hermetic: only the extraction and content-type logic runs here; the
 // network fetches run where the script is invoked directly, in CI.

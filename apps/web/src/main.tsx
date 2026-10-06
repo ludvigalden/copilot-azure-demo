@@ -1,5 +1,5 @@
-import { FluentProvider, makeStyles, makeStaticStyles, tokens } from "@fluentui/react-components"
-import { StrictMode, type ReactNode } from "react"
+import { FluentProvider, makeStaticStyles, makeStyles, tokens } from "@fluentui/react-components"
+import { type ReactNode, StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 import { App } from "./App"
 import { api, needsAuth } from "./api/client"

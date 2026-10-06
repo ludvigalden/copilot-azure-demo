@@ -10,7 +10,7 @@ import {
   Textarea,
   tokens,
 } from "@fluentui/react-components"
-import { useEffect, useRef, useState } from "react"
+import { type KeyboardEvent, useEffect, useRef, useState } from "react"
 import { api, ReauthRequiredError } from "./api/client"
 import type { components } from "./api/schema"
 
@@ -58,10 +58,12 @@ const useStyles = makeStyles({
     flexDirection: "column",
     gap: tokens.spacingVerticalL,
     minWidth: 0,
-    "&:focus-visible": {
-      outline: `2px solid ${tokens.colorStrokeFocus2}`,
-      outlineOffset: "-2px",
-    },
+  },
+  feed: {
+    display: "flex",
+    flexDirection: "column",
+    gap: tokens.spacingVerticalL,
+    minWidth: 0,
   },
   surface: {
     padding: tokens.spacingHorizontalL,
@@ -71,6 +73,14 @@ const useStyles = makeStyles({
     minWidth: 0,
     flexShrink: 0,
     overflow: "visible",
+  },
+  feedArticle: {
+    "&:focus-visible": {
+      outlineWidth: "2px",
+      outlineStyle: "solid",
+      outlineColor: tokens.colorStrokeFocus2,
+      outlineOffset: "2px",
+    },
   },
   answer: {
     minHeight: "12rem",
@@ -125,6 +135,60 @@ const useStyles = makeStyles({
   },
 })
 
+/**
+ * The knowledge base may echo a source twice in one answer. Identical
+ * (title, url) pairs render identically and would collide as React keys,
+ * so keep the first occurrence; a different URL is a distinct source.
+ */
+function uniqueCitations(citations: Answer["citations"]): Answer["citations"] {
+  const seen = new Set<string>()
+  const unique: Answer["citations"] = []
+  for (const citation of citations) {
+    const key = citationKey(citation)
+    if (seen.has(key)) continue
+    seen.add(key)
+    unique.push(citation)
+  }
+  return unique
+}
+
+/** The content-derived identity of a rendered citation: its (title, url) pair. */
+function citationKey(citation: Answer["citations"][number]): string {
+  return JSON.stringify([citation.title, citation.url])
+}
+
+const FEED_ARTICLE_SELECTOR = "[data-feed-index]"
+
+const FOCUSABLE_AFTER_FEED_SELECTOR =
+  "a[href], button:not([disabled]), textarea, input:not([type='hidden']), select, [tabindex]:not([tabindex='-1'])"
+
+/**
+ * Move focus to the first focusable element after (or, for `after = false`,
+ * the last focusable element before) the feed, the APG feed pattern's exit
+ * convention for Control+End / Control+Home.
+ */
+function focusFeedExit(feed: HTMLElement, after: boolean): void {
+  const candidates = Array.from(
+    document.querySelectorAll<HTMLElement>(FOCUSABLE_AFTER_FEED_SELECTOR),
+  ).filter((el) => el !== feed && !feed.contains(el))
+  let exit: HTMLElement | null = null
+  if (after) {
+    exit =
+      candidates.find((el) =>
+        Boolean(feed.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING),
+      ) ?? null
+  } else {
+    for (let i = candidates.length - 1; i >= 0; i -= 1) {
+      const candidate = candidates[i]
+      if (candidate && candidate.compareDocumentPosition(feed) & Node.DOCUMENT_POSITION_FOLLOWING) {
+        exit = candidate
+        break
+      }
+    }
+  }
+  exit?.focus()
+}
+
 export function App({
   signedIn = false,
   signIn,
@@ -154,6 +218,8 @@ export function App({
   // is dropped.
   const profileEpoch = useRef(0)
   const guestRef = useRef(false)
+  const feedRef = useRef<HTMLDivElement | null>(null)
+  const answerFocusPending = useRef(false)
 
   useEffect(() => {
     if (guestRef.current) return
@@ -172,6 +238,16 @@ export function App({
       },
     )
   }, [])
+
+  // After a successful ask, move focus to the answer article: it is the
+  // turn the asker waits for (APG feed pattern, app-driven focus). Only
+  // a rendered answer consumes the pending flag; an empty one leaves it
+  // for the next answer.
+  useEffect(() => {
+    if (!answer || !answerFocusPending.current) return
+    answerFocusPending.current = false
+    feedRef.current?.querySelector<HTMLElement>('[data-feed-index="2"]')?.focus()
+  }, [answer])
 
   const chooseGuest = () => {
     continueAsGuest?.()
@@ -192,6 +268,56 @@ export function App({
     signOut?.()
   }
 
+  // APG feed roving: Arrow/PageUp/Down step between articles, Home/End
+  // jumps first/last, Ctrl+Home/End exits. No article is a tab stop:
+  // Tab walks the articles' own controls; only editor keys pass through.
+  const onFeedKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const feed = feedRef.current
+    if (!feed) return
+    const target = event.target as HTMLElement | null
+    if (target?.closest("textarea, input, select")) return
+    const current = target?.closest<HTMLElement>(FEED_ARTICLE_SELECTOR)
+    if (!current) return
+    const articles = Array.from(feed.querySelectorAll<HTMLElement>(FEED_ARTICLE_SELECTOR))
+    const currentIndex = articles.indexOf(current)
+    if (currentIndex === -1) return
+    const focusArticle = (index: number) => {
+      const clamped = Math.max(0, Math.min(articles.length - 1, index))
+      articles[clamped]?.focus()
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key === "Home") {
+      event.preventDefault()
+      focusFeedExit(feed, false)
+      return
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key === "End") {
+      event.preventDefault()
+      focusFeedExit(feed, true)
+      return
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey) return
+    switch (event.key) {
+      case "ArrowDown":
+      case "PageDown":
+        event.preventDefault()
+        focusArticle(currentIndex + 1)
+        return
+      case "ArrowUp":
+      case "PageUp":
+        event.preventDefault()
+        focusArticle(currentIndex - 1)
+        return
+      case "Home":
+        event.preventDefault()
+        focusArticle(0)
+        return
+      case "End":
+        event.preventDefault()
+        focusArticle(articles.length - 1)
+        return
+    }
+  }
+
   const ask = async () => {
     if (!question.trim() || asking) return
     setAsking(true)
@@ -201,6 +327,7 @@ export function App({
     try {
       const { data, response } = await api.POST("/answers", { body: { question } })
       if (response.ok) {
+        answerFocusPending.current = true
         setAnswer(data ?? null)
         setStatus(data ? "Answer ready." : "No answer returned.")
       } else {
@@ -269,7 +396,7 @@ export function App({
             ) : null)}
         </div>
       </header>
-      <main className={styles.workspace} tabIndex={0} aria-label="IT support workspace">
+      <main className={styles.workspace} aria-label="IT support workspace">
         {authError && (
           <Card className={styles.surface}>
             <Text block role="alert">
@@ -293,86 +420,120 @@ export function App({
           </Card>
         )}
         {error && <Text role="alert">{error}</Text>}
-        <Card role="region" className={styles.surface} aria-labelledby="question-heading">
-          <h2 id="question-heading" className={styles.heading}>
-            Ask a question
-          </h2>
-          <Field label="Your IT question" hint="Get help from the IT knowledge base.">
-            <Textarea
-              value={question}
-              onChange={(_, d) => setQuestion(d.value)}
-              placeholder="For example: How do I reset my password?"
-              rows={3}
-              maxLength={2000}
-            />
-          </Field>
-          <div className={styles.actions}>
-            <Button appearance="primary" onClick={ask} disabled={asking || !question.trim()}>
-              Ask
-            </Button>
-          </div>
-        </Card>
-        <Card
-          role="region"
-          className={mergeClasses(styles.surface, styles.answer)}
-          aria-labelledby="answer-heading"
-          aria-busy={asking}
+        {/* The conversation itself is one APG feed; auth errors and alerts
+            stay outside it so an alert is never read as a feed article. */}
+        <div
+          ref={feedRef}
+          role="feed"
+          aria-label="IT support conversation"
+          className={styles.feed}
+          onKeyDown={onFeedKeyDown}
         >
-          <h2 id="answer-heading" className={styles.heading}>
-            Answer
-          </h2>
-          {answer ? (
-            <>
-              <Text block className={styles.answerText}>
-                {answer.text}
+          <Card
+            role="article"
+            className={mergeClasses(styles.surface, styles.feedArticle)}
+            aria-labelledby="question-heading"
+            tabIndex={-1}
+            aria-posinset={1}
+            aria-setsize={3}
+            data-feed-index={1}
+          >
+            <h2 id="question-heading" className={styles.heading}>
+              Ask a question
+            </h2>
+            <Field label="Your IT question" hint="Get help from the IT knowledge base.">
+              <Textarea
+                value={question}
+                onChange={(_, d) => setQuestion(d.value)}
+                placeholder="For example: How do I reset my password?"
+                rows={3}
+                maxLength={2000}
+              />
+            </Field>
+            <div className={styles.actions}>
+              <Button appearance="primary" onClick={ask} disabled={asking || !question.trim()}>
+                Ask
+              </Button>
+            </div>
+          </Card>
+          <Card
+            role="article"
+            className={mergeClasses(styles.surface, styles.answer, styles.feedArticle)}
+            aria-labelledby="answer-heading"
+            aria-describedby="answer-content"
+            aria-busy={asking}
+            tabIndex={-1}
+            aria-posinset={2}
+            aria-setsize={3}
+            data-feed-index={2}
+          >
+            <h2 id="answer-heading" className={styles.heading}>
+              Answer
+            </h2>
+            {answer ? (
+              <>
+                <Text block className={styles.answerText} id="answer-content">
+                  {answer.text}
+                </Text>
+                {answer.citations.length > 0 && (
+                  <>
+                    <h3 className={styles.heading}>Sources</h3>
+                    <ul className={styles.citations}>
+                      {uniqueCitations(answer.citations).map((c) => (
+                        <li key={citationKey(c)}>
+                          {c.url ? (
+                            <Link href={c.url} target="_blank" rel="noreferrer">
+                              {c.title}
+                            </Link>
+                          ) : (
+                            <Text>{c.title}</Text>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </>
+            ) : (
+              // The describedby target alternates with the answer text: one
+              // of the two is always rendered, so the reference resolves.
+              <Text className={styles.muted} id="answer-content">
+                {asking
+                  ? "Searching the knowledge base…"
+                  : "Your answer and sources will appear here."}
               </Text>
-              {answer.citations.length > 0 && (
-                <>
-                  <h3 className={styles.heading}>Sources</h3>
-                  <ul className={styles.citations}>
-                    {answer.citations.map((c, index) => (
-                      <li key={`${index}-${c.title}`}>
-                        {c.url ? (
-                          <Link href={c.url} target="_blank" rel="noreferrer">
-                            {c.title}
-                          </Link>
-                        ) : (
-                          <Text>{c.title}</Text>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
-            </>
-          ) : (
-            <Text className={styles.muted}>
-              {asking ? "Searching the knowledge base…" : "Your answer and sources will appear here."}
-            </Text>
-          )}
-        </Card>
-        <section className={styles.escalation} aria-labelledby="help-heading">
-          <h2 id="help-heading" className={styles.heading}>
-            Need more help?
-          </h2>
-          <Text className={styles.muted}>Open an IT ticket if you need further support.</Text>
-          <div className={styles.actions}>
-            <Button appearance="secondary" onClick={escalate} disabled={escalating}>
-              Escalate to IT
-            </Button>
-          </div>
-          {ticket && (
-            <Card className={styles.surface}>
-              <Text weight="semibold">Ticket {ticket.number}</Text>
-              <Text>{ticket.shortDescription}</Text>
-              {ticket.url && (
-                <Link href={ticket.url} target="_blank" rel="noreferrer">
-                  Open in the ticketing system
-                </Link>
-              )}
-            </Card>
-          )}
-        </section>
+            )}
+          </Card>
+          <article
+            className={mergeClasses(styles.escalation, styles.feedArticle)}
+            aria-labelledby="help-heading"
+            tabIndex={-1}
+            aria-posinset={3}
+            aria-setsize={3}
+            data-feed-index={3}
+          >
+            <h2 id="help-heading" className={styles.heading}>
+              Need more help?
+            </h2>
+            <Text className={styles.muted}>Open an IT ticket if you need further support.</Text>
+            <div className={styles.actions}>
+              <Button appearance="secondary" onClick={escalate} disabled={escalating}>
+                Escalate to IT
+              </Button>
+            </div>
+            {ticket && (
+              <Card className={styles.surface}>
+                <Text weight="semibold">Ticket {ticket.number}</Text>
+                <Text>{ticket.shortDescription}</Text>
+                {ticket.url && (
+                  <Link href={ticket.url} target="_blank" rel="noreferrer">
+                    Open in the ticketing system
+                  </Link>
+                )}
+              </Card>
+            )}
+          </article>
+        </div>
       </main>
       <div className={styles.actions}>
         {(asking || escalating) && (

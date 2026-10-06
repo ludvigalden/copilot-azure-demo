@@ -78,13 +78,17 @@ async function main(): Promise<void> {
   }
   const pageType = contentType(page)
   if (!pageType.startsWith("text/html")) {
-    console.error(`FAIL: the page at ${base} answered content type "${pageType}", expected text/html`)
+    console.error(
+      `FAIL: the page at ${base} answered content type "${pageType}", expected text/html`,
+    )
     process.exit(1)
   }
   const html = await page.text()
   const urls = extractAssetUrls(html, page.url || base)
   if (urls.length === 0) {
-    console.error(`FAIL: the page at ${base} references no assets - the SPA entry script is missing`)
+    console.error(
+      `FAIL: the page at ${base} references no assets - the SPA entry script is missing`,
+    )
     process.exit(1)
   }
   let checked = 0

@@ -432,4 +432,265 @@ describe("App at the component and auth boundary", () => {
     expect(document.querySelectorAll(".fui-FluentProvider")).toHaveLength(1)
     expect(provider?.querySelector("textarea")).not.toBeNull()
   })
+
+  it("structures the conversation as a labelled feed of labelled roving articles", () => {
+    useMiddleware(() => {})
+    renderApp({ signedIn: false })
+    const workspace = document.querySelector("main")
+    expect(workspace).not.toBeNull()
+    expect(workspace?.hasAttribute("tabindex")).toBe(false)
+    expect(workspace?.getAttribute("aria-label")).toBe("IT support workspace")
+    const feed = workspace?.querySelector('[role="feed"]')
+    expect(feed?.getAttribute("aria-label")).toBe("IT support conversation")
+    const articles = [...(feed?.querySelectorAll("[data-feed-index]") ?? [])]
+    expect(articles).toHaveLength(3)
+    articles.forEach((article, index) => {
+      // The ask and answer articles are Fluent Cards carrying the explicit
+      // role; the escalation unit is the native <article> element, whose
+      // article role is implicit.
+      expect(article.getAttribute("role") === "article" || article.tagName === "ARTICLE").toBe(true)
+      expect(article.getAttribute("tabindex")).toBe("-1")
+      expect(article.getAttribute("aria-posinset")).toBe(String(index + 1))
+      expect(article.getAttribute("aria-setsize")).toBe("3")
+      const labelledby = article.getAttribute("aria-labelledby")
+      expect(labelledby).toBeTruthy()
+      expect(document.getElementById(labelledby ?? "")?.textContent).toBeTruthy()
+    })
+    expect(document.getElementById("answer-content")).toBeTruthy()
+    expect(feed?.querySelector("textarea")).toBeTruthy()
+    // An auth alert is a boundary choice, not a conversation turn: it must
+    // stay outside the feed.
+    expect(workspace?.querySelectorAll('[role="feed"]')).toHaveLength(1)
+  })
+
+  it("roves feed focus between articles with ArrowDown, ArrowUp, Home, and End", async () => {
+    useMiddleware(() => {})
+    renderApp({ signedIn: false })
+    await flush()
+    const articles = [
+      ...(document
+        .querySelector('[role="feed"]')
+        ?.querySelectorAll<HTMLElement>("[data-feed-index]") ?? []),
+    ]
+    expect(articles).toHaveLength(3)
+    act(() => articles[0]?.focus())
+    expect(document.activeElement).toBe(articles[0])
+    await act(async () => {
+      articles[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }))
+    })
+    expect(document.activeElement).toBe(articles[1])
+    await act(async () => {
+      articles[1]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }))
+    })
+    expect(document.activeElement).toBe(articles[0])
+    await act(async () => {
+      articles[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }))
+    })
+    expect(document.activeElement).toBe(articles[2])
+    await act(async () => {
+      articles[2]?.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }))
+    })
+    expect(document.activeElement).toBe(articles[0])
+  })
+
+  it("moves feed focus a page at a time with PageDown and PageUp", async () => {
+    useMiddleware(() => {})
+    renderApp({ signedIn: false })
+    await flush()
+    const articles = [
+      ...(document
+        .querySelector('[role="feed"]')
+        ?.querySelectorAll<HTMLElement>("[data-feed-index]") ?? []),
+    ]
+    act(() => articles[0]?.focus())
+    await act(async () => {
+      articles[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "PageDown", bubbles: true }))
+    })
+    expect(document.activeElement).toBe(articles[1])
+    await act(async () => {
+      articles[1]?.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp", bubbles: true }))
+    })
+    expect(document.activeElement).toBe(articles[0])
+  })
+
+  it("roves from a control inside an article and clamps at the feed edges", async () => {
+    useMiddleware(() => {})
+    renderApp({ signedIn: false })
+    await flush()
+    const feed = document.querySelector('[role="feed"]')
+    const articles = [...(feed?.querySelectorAll<HTMLElement>("[data-feed-index]") ?? [])]
+    const askButton = [...(articles[0]?.querySelectorAll("button") ?? [])][0]
+    expect(askButton?.textContent).toBe("Ask")
+    await act(async () => {
+      askButton?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }))
+    })
+    expect(document.activeElement).toBe(articles[1])
+    await act(async () => {
+      articles[0]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }))
+    })
+    expect(document.activeElement).toBe(articles[0])
+    await act(async () => {
+      articles[2]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }))
+    })
+    expect(document.activeElement).toBe(articles[2])
+  })
+
+  it("leaves caret keys inside the question textarea to the editor", async () => {
+    useMiddleware(() => {})
+    renderApp({ signedIn: false })
+    await flush()
+    const area = container?.querySelector("textarea") as HTMLTextAreaElement
+    act(() => area.focus())
+    await act(async () => {
+      area.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }))
+    })
+    expect(document.activeElement).toBe(area)
+    await act(async () => {
+      area.dispatchEvent(new KeyboardEvent("keydown", { key: "PageDown", bubbles: true }))
+    })
+    expect(document.activeElement).toBe(area)
+  })
+
+  it("Control+Home exits the feed to the focusable element before it", async () => {
+    useMiddleware(() => {})
+    const s = renderApp({ signedIn: false })
+    await flush()
+    const articles = [
+      ...(document
+        .querySelector('[role="feed"]')
+        ?.querySelectorAll<HTMLElement>("[data-feed-index]") ?? []),
+    ]
+    act(() => articles[2]?.focus())
+    await act(async () => {
+      articles[2]?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Home", ctrlKey: true, bubbles: true }),
+      )
+    })
+    expect(document.activeElement).toBe(s.button("Sign in"))
+  })
+
+  it("Control+End holds focus when nothing focusable follows the feed", async () => {
+    useMiddleware(() => {})
+    renderApp({ signedIn: false })
+    await flush()
+    const articles = [
+      ...(document
+        .querySelector('[role="feed"]')
+        ?.querySelectorAll<HTMLElement>("[data-feed-index]") ?? []),
+    ]
+    act(() => articles[2]?.focus())
+    await act(async () => {
+      articles[2]?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "End", ctrlKey: true, bubbles: true }),
+      )
+    })
+    expect(document.activeElement).toBe(articles[2])
+  })
+
+  it("moves focus to the answer article when an ask completes", async () => {
+    useMiddleware(() => {})
+    const s = renderApp({ signedIn: false })
+    await flush()
+    const articles = [
+      ...(document
+        .querySelector('[role="feed"]')
+        ?.querySelectorAll<HTMLElement>("[data-feed-index]") ?? []),
+    ]
+    await s.type("How do I reset my password?")
+    await s.click("Ask")
+    expect(document.activeElement).toBe(articles[1])
+    expect(s.status()).toContain("Answer ready")
+  })
+
+  it("gives feed articles a visible keyboard focus indication", () => {
+    useMiddleware(() => {})
+    renderApp({ signedIn: false })
+    const article = document.querySelector('[role="article"]')
+    expect(article).toBeTruthy()
+    const focusRules = [...document.styleSheets]
+      .flatMap((sheet) => [...sheet.cssRules])
+      .filter(
+        (rule): rule is CSSStyleRule =>
+          rule instanceof CSSStyleRule && rule.selectorText.includes(":focus-visible"),
+      )
+    // jsdom cannot evaluate :focus-visible at matches() time, so assert
+    // the linkage structurally: a :focus-visible rule must target a class
+    // the articles actually carry, and that rule must paint a solid
+    // outline.
+    const articleRules = focusRules.filter((rule) =>
+      [...(article?.classList ?? [])].some((cls) =>
+        rule.selectorText.startsWith(`.${cls}:focus-visible`),
+      ),
+    )
+    expect(articleRules.length).toBeGreaterThan(0)
+    // Griffel's atomic CSS gives each declaration its own class, so collect
+    // the declared value per outline property across the article's rules.
+    const valueFor = (prop: string) =>
+      articleRules
+        .find((rule) => rule.style.getPropertyValue(prop) !== "")
+        ?.style.getPropertyValue(prop)
+    expect(valueFor("outline-width")).toBe("2px")
+    expect(valueFor("outline-style")).toBe("solid")
+    expect(valueFor("outline-color")).toContain("colorStrokeFocus2")
+    expect(valueFor("outline-offset")).toBe("2px")
+  })
+
+  it("dedupes identical citations, keeping the first occurrence and its order", async () => {
+    useMiddleware(() => {})
+    setFetchImpl((request) => {
+      if (new URL(request.url).pathname === "/api/answers") {
+        return jsonResponse({
+          text: "Sources may repeat.",
+          citations: [
+            { title: "Password reset", url: "https://kb.example/reset" },
+            { title: "Account lockout", url: "https://kb.example/lockout" },
+            { title: "Password reset", url: "https://kb.example/reset" },
+            { title: "MFA setup", url: "https://kb.example/mfa" },
+          ],
+          chunks: [],
+        })
+      }
+      return jsonResponse(PROFILE)
+    })
+    const s = renderApp()
+    await flush()
+    await s.type("How do I reset my password?")
+    await s.click("Ask")
+    // The knowledge base echoed "Password reset" twice; one row survives,
+    // and the survivors keep the order the answer listed them in.
+    const rows = [...(container?.querySelectorAll("ul > li") ?? [])]
+    expect(
+      rows.map((row) => row.querySelector("a")?.getAttribute("href") ?? row.textContent),
+    ).toEqual(["https://kb.example/reset", "https://kb.example/lockout", "https://kb.example/mfa"])
+  })
+
+  it("keeps same-title citations with different URLs and renders url-less ones as plain text", async () => {
+    useMiddleware(() => {})
+    setFetchImpl((request) => {
+      if (new URL(request.url).pathname === "/api/answers") {
+        return jsonResponse({
+          text: "Two guides share a title.",
+          citations: [
+            { title: "VPN guide", url: "https://kb.example/vpn-mac" },
+            { title: "VPN guide", url: "https://kb.example/vpn-windows" },
+            { title: "Printer policy", url: "" },
+          ],
+          chunks: [],
+        })
+      }
+      return jsonResponse(PROFILE)
+    })
+    const s = renderApp()
+    await flush()
+    await s.type("Why is the VPN slow?")
+    await s.click("Ask")
+    const rows = [...(container?.querySelectorAll("ul > li") ?? [])]
+    expect(rows).toHaveLength(3)
+    expect(rows[0]?.querySelector("a")?.getAttribute("href")).toBe("https://kb.example/vpn-mac")
+    expect(rows[1]?.querySelector("a")?.getAttribute("href")).toBe("https://kb.example/vpn-windows")
+    expect(rows[0]?.textContent).toBe("VPN guide")
+    expect(rows[1]?.textContent).toBe("VPN guide")
+    expect(rows[2]?.querySelector("a")).toBeNull()
+    expect(rows[2]?.textContent).toBe("Printer policy")
+  })
 })

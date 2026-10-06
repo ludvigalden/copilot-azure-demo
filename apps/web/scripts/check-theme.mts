@@ -24,6 +24,46 @@ type ProbeState = {
   neutralForeground: string
 }
 
+// The computed theme a release must show. Exported so the hermetic unit
+// test exercises the same acceptance values the browser gate applies.
+export const EXPECTED_THEME = {
+  fontFamilyBase: 'system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+  brandBackground: "#0f6cbd",
+  controlRadius: "6px",
+  surfaceRadius: "12px",
+  neutralBackground: "rgb(243, 246, 250)",
+  neutralForeground: "#202c3a",
+} as const
+
+// Pure acceptance predicate for the theme gate: "" when the probed state
+// matches EXPECTED_THEME, else the human-readable rejection reason.
+export function themeRejection(state: Partial<ProbeState> | undefined): string {
+  const normalized = (value?: string) => (value ?? "").replace(/,\s*/g, ",")
+  if (!state?.tokenFontFamilyBase || !state?.tokenBrandBackground) {
+    return `the rendered button computes no theme tokens (fontFamilyBase "${state?.tokenFontFamilyBase}", brandBackground "${state?.tokenBrandBackground}")`
+  }
+  if (/times new roman/i.test(state.fontFamily ?? "")) {
+    return `the rendered button still uses a browser-default font: "${state.fontFamily}"`
+  }
+  if (!state?.providerFontFamilyBase || !state?.providerBrandBackground) {
+    return `the provider root itself computes no theme tokens (fontFamilyBase "${state?.providerFontFamilyBase}", brandBackground "${state?.providerBrandBackground}")`
+  }
+  if (
+    normalized(state.tokenFontFamilyBase) !== EXPECTED_THEME.fontFamilyBase ||
+    normalized(state.providerFontFamilyBase) !== EXPECTED_THEME.fontFamilyBase ||
+    !/^system-ui(?:,|$)/.test(state.fontFamily ?? "") ||
+    state.tokenBrandBackground !== EXPECTED_THEME.brandBackground ||
+    state.providerBrandBackground !== EXPECTED_THEME.brandBackground ||
+    state.controlRadius !== EXPECTED_THEME.controlRadius ||
+    state.surfaceRadius !== EXPECTED_THEME.surfaceRadius ||
+    state.neutralBackground !== EXPECTED_THEME.neutralBackground ||
+    state.neutralForeground !== EXPECTED_THEME.neutralForeground
+  ) {
+    return `the rendered app theme differs from the intended tokens: ${JSON.stringify(state)}`
+  }
+  return ""
+}
+
 type Evaluated = {
   value?: unknown
   exceptionDetails?: { exception?: { description?: string } }
@@ -46,7 +86,10 @@ function findBrowser(): string {
 }
 
 /** Polls the DevTools HTTP endpoint for the page target that loaded the base URL. */
-async function findPageTarget(port: number, base: string): Promise<{ webSocketDebuggerUrl: string }> {
+async function findPageTarget(
+  port: number,
+  base: string,
+): Promise<{ webSocketDebuggerUrl: string }> {
   const deadline = Date.now() + 20_000
   for (;;) {
     try {
@@ -95,16 +138,16 @@ function command(socket: WebSocket, method: string, params: object): Promise<unk
       else resolve(message.result)
     }
     socket.addEventListener("message", onMessage)
-    socket.send(
-      JSON.stringify({ id, method, params }),
-    )
+    socket.send(JSON.stringify({ id, method, params }))
   })
 }
 
 async function evaluate(socket: WebSocket, expression: string): Promise<Evaluated> {
-  const reply = await command(socket, "Runtime.evaluate", {
-    expression, awaitPromise: true, returnByValue: true,
-  }) as { result?: { value?: unknown }; exceptionDetails?: Evaluated["exceptionDetails"] }
+  const reply = (await command(socket, "Runtime.evaluate", {
+    expression,
+    awaitPromise: true,
+    returnByValue: true,
+  })) as { result?: { value?: unknown }; exceptionDetails?: Evaluated["exceptionDetails"] }
   return { value: reply.result?.value, exceptionDetails: reply.exceptionDetails }
 }
 
@@ -140,7 +183,13 @@ type PendingState = {
   reduced: boolean
   status: string
   hidden: string
-  slots: Array<{ pseudo: string | null; name: string; duration: string; iterations: string; transition: string }>
+  slots: Array<{
+    pseudo: string | null
+    name: string
+    duration: string
+    iterations: string
+    transition: string
+  }>
   animations: Array<{ duration: number | string; iterations: string }>
 }
 
@@ -148,7 +197,10 @@ async function pendingState(socket: WebSocket): Promise<PendingState> {
   const evaluated = await evaluate(socket, PENDING_PROBE)
   if (evaluated.exceptionDetails) throw new Error(evaluated.exceptionDetails.exception?.description)
   const state = evaluated.value as PendingState
-  if (state.hidden !== "true" || !["Finding an answer…", "Opening your ticket…"].includes(state.status)) {
+  if (
+    state.hidden !== "true" ||
+    !["Finding an answer…", "Opening your ticket…"].includes(state.status)
+  ) {
     throw new Error(`pending announcement missing: ${JSON.stringify(state)}`)
   }
   return state
@@ -264,33 +316,8 @@ async function main(): Promise<void> {
       fail(evaluated.exceptionDetails.exception?.description ?? "the in-page probe threw")
     }
     const state = evaluated.value as Partial<ProbeState> | undefined
-    if (!state?.tokenFontFamilyBase || !state?.tokenBrandBackground) {
-      fail(
-        `the rendered button computes no theme tokens (fontFamilyBase "${state?.tokenFontFamilyBase}", brandBackground "${state?.tokenBrandBackground}")`,
-      )
-    }
-    if (/times new roman/i.test(state.fontFamily ?? "")) {
-      fail(`the rendered button still uses a browser-default font: "${state.fontFamily}"`)
-    }
-    if (!state?.providerFontFamilyBase || !state?.providerBrandBackground) {
-      fail(
-        `the provider root itself computes no theme tokens (fontFamilyBase "${state?.providerFontFamilyBase}", brandBackground "${state?.providerBrandBackground}")`,
-      )
-    }
-    const expectedFont = 'system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif'
-    if (
-      state.tokenFontFamilyBase.replace(/,\s*/g, ",") !== expectedFont ||
-      state.providerFontFamilyBase.replace(/,\s*/g, ",") !== expectedFont ||
-      !/^system-ui(?:,|$)/.test(state.fontFamily ?? "") ||
-      state.tokenBrandBackground !== "#0f6cbd" ||
-      state.providerBrandBackground !== "#0f6cbd" ||
-      state.controlRadius !== "6px" ||
-      state.surfaceRadius !== "12px" ||
-      state.neutralBackground !== "rgb(243, 246, 250)" ||
-      state.neutralForeground !== "#202c3a"
-    ) {
-      fail(`the rendered app theme differs from the intended tokens: ${JSON.stringify(state)}`)
-    }
+    const rejection = themeRejection(state)
+    if (rejection) fail(rejection)
     console.log(`ok: themed surface rendered ${JSON.stringify(state)}`)
     await command(socket, "Emulation.setEmulatedMedia", {
       features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
@@ -299,9 +326,17 @@ async function main(): Promise<void> {
     await evaluate(socket, `document.querySelector("textarea").focus()`)
     await command(socket, "Input.insertText", { text: "Pending motion check" })
     await new Promise((resolve) => setTimeout(resolve, 100))
-    await evaluate(socket, `[...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Ask").click()`)
+    await evaluate(
+      socket,
+      `[...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Ask").click()`,
+    )
     const normal = await pendingState(socket)
-    if (normal.reduced || !normal.animations.some((animation) => animation.iterations === "Infinity" && Number(animation.duration) > 0)) {
+    if (
+      normal.reduced ||
+      !normal.animations.some(
+        (animation) => animation.iterations === "Infinity" && Number(animation.duration) > 0,
+      )
+    ) {
       throw new Error(`normal Spinner motion missing: ${JSON.stringify(normal)}`)
     }
     await command(socket, "Emulation.setEmulatedMedia", {
@@ -314,9 +349,13 @@ async function main(): Promise<void> {
       requestId: answerRequest,
       responseCode: 200,
       responseHeaders: [{ name: "Content-Type", value: "application/json" }],
-      body: Buffer.from(JSON.stringify({ text: "Local motion fixture", citations: [], chunks: [] })).toString("base64"),
+      body: Buffer.from(
+        JSON.stringify({ text: "Local motion fixture", citations: [], chunks: [] }),
+      ).toString("base64"),
     })
-    const settled = await evaluate(socket, `new Promise((resolve, reject) => {
+    const settled = await evaluate(
+      socket,
+      `new Promise((resolve, reject) => {
       const deadline = Date.now() + 5000
       const tick = () => {
         if (!document.querySelector(".fui-Spinner") && document.querySelector('[role="status"]').textContent === "Answer ready.") return resolve(true)
@@ -324,19 +363,36 @@ async function main(): Promise<void> {
         setTimeout(tick, 50)
       }
       tick()
-    })`)
-    if (settled.exceptionDetails || settled.value !== true) throw new Error("held answer did not settle")
-    await evaluate(socket, `[...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Escalate to IT").click()`)
+    })`,
+    )
+    if (settled.exceptionDetails || settled.value !== true)
+      throw new Error("held answer did not settle")
+    await evaluate(
+      socket,
+      `[...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Escalate to IT").click()`,
+    )
     const reducedTicket = await pendingState(socket)
-    if (reducedAsk.status !== "Finding an answer…" || reducedTicket.status !== "Opening your ticket…" || !held.has("/api/tickets")) {
+    if (
+      reducedAsk.status !== "Finding an answer…" ||
+      reducedTicket.status !== "Opening your ticket…" ||
+      !held.has("/api/tickets")
+    ) {
       throw new Error("both pending request branches must be observed separately")
     }
     for (const reduced of [reducedAsk, reducedTicket]) {
-      if (!reduced.reduced || reduced.animations.length > 0 || reduced.slots.some((slot) => slot.name !== "none" || slot.duration !== "0s" || slot.transition !== "0s")) {
+      if (
+        !reduced.reduced ||
+        reduced.animations.length > 0 ||
+        reduced.slots.some(
+          (slot) => slot.name !== "none" || slot.duration !== "0s" || slot.transition !== "0s",
+        )
+      ) {
         throw new Error(`reduced-motion Spinner still animates: ${JSON.stringify(reduced)}`)
       }
     }
-    console.log(`ok: pending motion rendered ${JSON.stringify({ normal, reducedAsk, reducedTicket })}`)
+    console.log(
+      `ok: pending motion rendered ${JSON.stringify({ normal, reducedAsk, reducedTicket })}`,
+    )
     socket.close()
   } finally {
     chrome.kill("SIGKILL")

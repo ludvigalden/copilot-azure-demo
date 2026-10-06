@@ -2,6 +2,7 @@
 # Run one deployment workflow on this machine, against staging.
 #
 #   scripts/local-run <infra|app|ingest|ci|power-platform> [extra options]
+#   scripts/local-run lint
 #
 # Each workflow runs under the event a local run means: infra and
 # ingest run as workflow_dispatch (their non-pull-request path), the
@@ -11,6 +12,12 @@
 # Platform workflow reaches its pack. Nothing a local run does can
 # reach production, and release.yml is not offered here at all.
 # Extra options are passed through to the runner.
+#
+# lint is not a workflow: it runs the exact lint command CI runs on
+# every pull request, on this tree. It needs no secrets and no
+# container daemon, so it never reaches the .env.local gate or the
+# runner. Its exit status is the loop's, reported the same way as the
+# workflows', so a captured log cannot look green after a failed lint.
 #
 # Honesty about the loop: act pulls images from the registry by
 # default — it is not an offline hermetic runner. A locally built
@@ -23,6 +30,15 @@ set -eu
 cd "$(git rev-parse --show-toplevel)"
 
 case "${1:-}" in
+    lint)
+        # The exact command CI runs for apps/web. Extra options pass
+        # through to npm, as with the workflows.
+        shift
+        rc=0
+        npm run lint --prefix apps/web "$@" || rc=$?
+        echo "local-run: lint exited with status $rc"
+        exit "$rc"
+        ;;
     infra | ingest)
         workflow=".github/workflows/$1.yml"
         event=workflow_dispatch
@@ -32,7 +48,7 @@ case "${1:-}" in
         event=pull_request
         ;;
     *)
-        echo "usage: $0 <infra|ingest|ci|app|power-platform>" >&2
+        echo "usage: $0 <infra|ingest|ci|app|power-platform|lint>" >&2
         exit 64
         ;;
 esac

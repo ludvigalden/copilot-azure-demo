@@ -8,7 +8,10 @@
 # already be cached by earlier local runs. The runner's image pull
 # behavior is honest in the entry point's own header: act pulls by
 # default, so a locally built image is used only when it already sits
-# in the local Docker store.
+# in the local Docker store. The lint case needs no runner: it runs
+# scripts/local-run lint in a second throwaway tree with a clean probe
+# and a deliberately broken one, reusing the real checkout's installed
+# dependencies through a symlink.
 set -eu
 
 cd "$(git rev-parse --show-toplevel)"
@@ -30,7 +33,8 @@ command -v "$DOCKER_BIN" >/dev/null 2>&1 || {
 }
 
 root="$(mktemp -d /tmp/local-run-test.XXXXXX)"
-trap 'rm -rf "$root"' EXIT INT TERM
+lint_root="$(mktemp -d /tmp/local-run-lint-test.XXXXXX)"
+trap 'rm -rf "$root" "$lint_root"' EXIT INT TERM
 
 mkdir -p "$root/scripts" "$root/.github/workflows"
 cp "$entry" "$root/scripts/local-run"
@@ -108,3 +112,85 @@ if ! grep -q "^local-run: act exited with status 0\$" "$root/green.log"; then
 fi
 
 echo "ok: failing run exited $fail_rc, passing run exited 0"
+
+# The lint case: scripts/local-run lint runs the exact command CI runs,
+# with no .env.local and no act, and keeps the same verdict discipline.
+# The throwaway tree carries its own sources and biome config; the
+# dependencies (biome itself) are reused from the real checkout through
+# a symlink rather than reinstalled, and the lint script is derived
+# from the real package.json so the probe cannot drift from CI.
+command -v npm >/dev/null 2>&1 || {
+    echo "skip: npm is not installed" >&2
+    exit 77
+}
+command -v node >/dev/null 2>&1 || {
+    echo "skip: node is not installed" >&2
+    exit 77
+}
+[ -x apps/web/node_modules/.bin/biome ] || {
+    echo "skip: apps/web dependencies are not installed" >&2
+    exit 77
+}
+
+mkdir -p "$lint_root/scripts" "$lint_root/apps/web/src"
+cp "$entry" "$lint_root/scripts/local-run"
+cp apps/web/biome.json "$lint_root/apps/web/biome.json"
+node -e '
+  const fs = require("fs")
+  const pkg = JSON.parse(fs.readFileSync("apps/web/package.json", "utf8"))
+  const probe = { name: "web-lint-probe", private: true, scripts: { lint: pkg.scripts.lint } }
+  fs.writeFileSync(process.argv[1], JSON.stringify(probe, null, 2) + "\n")
+' "$lint_root/apps/web/package.json"
+ln -s "$PWD/apps/web/node_modules" "$lint_root/apps/web/node_modules"
+git -C "$lint_root" init -q -b main
+
+# The green case: a source file that satisfies every enabled rule.
+cat > "$lint_root/apps/web/src/probe.ts" <<'EOF'
+// A source file that satisfies every enabled rule.
+export const answer = "all good"
+EOF
+
+lint_green_rc=0
+(cd "$lint_root" && sh scripts/local-run lint) >"$lint_root/green.log" 2>"$lint_root/green.err" \
+    || lint_green_rc=$?
+
+# The red case: the same probe with a string single-quoted and a
+# semicolon added, both of which the config's formatter rejects
+# (it requires double quotes and omits semicolons).
+cat > "$lint_root/apps/web/src/probe.ts" <<'EOF'
+// A source file that deliberately breaks the formatting rules.
+export const answer = 'deliberate violation';
+EOF
+
+lint_fail_rc=0
+(cd "$lint_root" && sh scripts/local-run lint) >"$lint_root/fail.log" 2>"$lint_root/fail.err" \
+    || lint_fail_rc=$?
+
+if [ "$lint_green_rc" -ne 0 ]; then
+    echo "FAIL: the lint command exited $lint_green_rc on a clean probe" >&2
+    tail -n 5 "$lint_root/green.err" >&2
+    exit 1
+fi
+if [ "$(tail -n 1 "$lint_root/green.log")" != "local-run: lint exited with status 0" ]; then
+    echo "FAIL: the green lint run's output lacks its verdict as the last line" >&2
+    tail -n 5 "$lint_root/green.log" >&2
+    exit 1
+fi
+if [ "$lint_fail_rc" -eq 0 ]; then
+    echo "FAIL: the lint command exited 0 on a deliberately broken probe" >&2
+    tail -n 5 "$lint_root/fail.err" >&2
+    exit 1
+fi
+if ! grep -q "^local-run: lint exited with status $lint_fail_rc\$" "$lint_root/fail.log"; then
+    echo "FAIL: the status line is missing from the failing lint run's output" >&2
+    tail -n 5 "$lint_root/fail.log" >&2
+    exit 1
+fi
+if [ "$(tail -n 1 "$lint_root/fail.log")" \
+    != "local-run: lint exited with status $lint_fail_rc" ]; then
+    echo "FAIL: the verdict line is not the failing lint run's last output line" >&2
+    tail -n 5 "$lint_root/fail.log" >&2
+    exit 1
+fi
+
+echo "ok: lint green run exited 0, lint red run exited $lint_fail_rc"
