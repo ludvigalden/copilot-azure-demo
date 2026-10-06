@@ -1,6 +1,8 @@
 """Hermetic tests for the evaluation producer."""
 
 import json
+import re
+import urllib.error
 from typing import Any
 
 import pytest
@@ -113,6 +115,38 @@ class ServingThenDeadTransport:
         raise self.error
 
 
+class TimeoutThenServingTransport:
+    """Raises EndpointTimeout for the first calls, then serves one response."""
+
+    def __init__(self, timeouts, response):
+        self.timeouts = timeouts
+        self.response = response
+        self.calls = 0
+
+    def __call__(self, method, url, headers, body, timeout):
+        self.calls += 1
+        if self.calls <= self.timeouts:
+            raise produce.EndpointTimeout("endpoint timed out: fixture")
+        return self.response
+
+
+class ColdStartTransport:
+    """Records every request, times the warm-up out, serves the measured set."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, method, url, headers, body, timeout):
+        payload = json.loads(body)
+        self.calls.append((method, url, payload.get("question")))
+        if payload.get("question") == "hello":
+            raise produce.EndpointTimeout("endpoint timed out: fixture")
+        status, served = (
+            (200, answer_body()) if payload.get("question") else (200, judge_body())
+        )
+        return produce.HttpResponse(status, json.dumps(served).encode())
+
+
 def test_retrieval_hit_reports_the_rank():
     assert produce.retrieval_hit(("x.md", "a.md"), "a.md", 3) == (True, 2)
     assert produce.retrieval_hit(("x.md", "a.md"), "a.md", 1) == (False, None)
@@ -180,11 +214,12 @@ def test_the_judge_call_caps_output_tokens(tmp_path, monkeypatch):
 def test_each_leg_times_out_against_its_own_constant(tmp_path, monkeypatch):
     monkeypatch.setenv("EVAL_TEST_KEY", "sekrit-value")
     config = make_config(tmp_path)
-    transport = FakeTransport([(200, answer_body()), (200, judge_body())])
+    transport = FakeTransport([(200, {}), (200, answer_body()), (200, judge_body())])
 
     produce.run(config, transport, lambda seconds: None)
 
-    answer_call, judge_call = transport.calls[0], transport.calls[1]
+    warm_up_call, answer_call, judge_call = transport.calls[:3]
+    assert warm_up_call[3] == {"question": "hello"}
     assert answer_call[1] == config.endpoint
     assert answer_call[4] == produce.ANSWER_TIMEOUT_SECONDS
     assert judge_call[1].startswith(f"https://{config.judge_host}/")
@@ -222,7 +257,7 @@ def test_default_transport_passes_the_timeout_to_urlopen(monkeypatch):
 def test_a_full_run_passes_and_records_provenance(tmp_path, monkeypatch):
     monkeypatch.setenv("EVAL_TEST_KEY", "sekrit-value")
     config = make_config(tmp_path, questions=2)
-    responses = []
+    responses = [(200, {})]
     for _ in range(2):
         responses.append((200, answer_body()))
         responses.append((200, judge_body()))
@@ -260,7 +295,9 @@ def test_an_empty_dataset_refuses(tmp_path, monkeypatch):
 def test_a_failed_answer_stays_failed(tmp_path, monkeypatch):
     monkeypatch.setenv("EVAL_TEST_KEY", "sekrit-value")
     config = make_config(tmp_path, questions=1)
-    transport = FakeTransport([(503, {"e": 1})] * produce.ANSWER_ATTEMPTS_PER_QUESTION)
+    transport = FakeTransport(
+        [(503, {"e": 1})] * (produce.ANSWER_ATTEMPTS_PER_QUESTION + 1)
+    )
 
     document = produce.run(config, transport, lambda seconds: None)
 
@@ -296,7 +333,7 @@ def test_main_exits_three_and_keeps_the_partial_document(tmp_path, monkeypatch):
     monkeypatch.setenv("EVAL_TEST_KEY", "sekrit-value")
     config = make_config(tmp_path, questions=2)
     dead = ServingThenDeadTransport(
-        [(200, answer_body()), (200, judge_body())],
+        [(200, {}), (200, answer_body()), (200, judge_body())],
         ProduceError("endpoint unreachable: the endpoint died mid-run"),
     )
     monkeypatch.setattr(produce, "default_transport", dead)
@@ -378,7 +415,7 @@ def release_fixture(tmp_path, monkeypatch):
         candidate=candidate,
         run_id="1:1",
     )
-    responses = []
+    responses = [(200, {})]
     for question in produce.load_dataset(produce.DEFAULT_DATASET):
         body = answer_body()
         body["citations"][0]["url"] = (
@@ -744,3 +781,163 @@ def test_capture_demands_one_immutable_kb_source_revision(
             ProduceError, match="index citations lack one immutable KB source revision"
         ):
             release.capture(["app", "kb"])
+
+
+def test_an_answer_timeout_is_retried_inside_the_attempt_cap():
+    transport = TimeoutThenServingTransport(
+        2, produce.HttpResponse(200, json.dumps(answer_body()).encode())
+    )
+    sleeps: list[float] = []
+    budget = Budget(answer_attempt_cap=4, judge_attempt_cap=6)
+
+    outcome = produce.ask_answer(
+        transport, "https://fixture/api/answers", "q", budget, sleeps.append
+    )
+
+    assert outcome.ok
+    assert outcome.status == "200"
+    assert sleeps == [
+        produce.ANSWER_RETRY_BACKOFF_SECONDS,
+        produce.ANSWER_RETRY_BACKOFF_SECONDS * 2,
+    ]
+    assert budget.answer_attempts == 3
+
+
+def test_a_judge_timeout_is_retried_inside_the_attempt_cap(tmp_path):
+    transport = TimeoutThenServingTransport(
+        2, produce.HttpResponse(200, json.dumps(judge_body()).encode())
+    )
+    sleeps: list[float] = []
+    budget = Budget(answer_attempt_cap=0, judge_attempt_cap=6)
+
+    outcome = produce.judge_answer(
+        transport, make_config(tmp_path), "key", "prompt", budget, sleeps.append
+    )
+
+    assert outcome.groundedness == 5.0
+    assert outcome.status == "200"
+    assert sleeps == [
+        produce.JUDGE_RETRY_BACKOFF_SECONDS,
+        produce.JUDGE_RETRY_BACKOFF_SECONDS * 2,
+    ]
+    assert budget.judge_attempts == 3
+
+
+def test_exhausted_answer_timeouts_return_a_failed_outcome():
+    transport = TimeoutThenServingTransport(99, produce.HttpResponse(200, b"{}"))
+    sleeps: list[float] = []
+    budget = Budget(
+        answer_attempt_cap=produce.ANSWER_ATTEMPTS_PER_QUESTION, judge_attempt_cap=6
+    )
+
+    outcome = produce.ask_answer(
+        transport, "https://fixture/api/answers", "q", budget, sleeps.append
+    )
+
+    assert not outcome.ok
+    assert "timed out" in outcome.error
+    assert outcome.status == "timeout"
+    assert budget.answer_attempts == produce.ANSWER_ATTEMPTS_PER_QUESTION
+    assert sleeps == [
+        produce.ANSWER_RETRY_BACKOFF_SECONDS * attempt
+        for attempt in range(1, produce.ANSWER_ATTEMPTS_PER_QUESTION + 1)
+    ]
+
+
+def test_default_transport_maps_timeout_to_the_retryable_class(monkeypatch):
+    def timeout_urlopen(request, timeout):
+        raise TimeoutError("socket timed out")
+
+    monkeypatch.setattr(produce.urllib.request, "urlopen", timeout_urlopen)
+
+    with pytest.raises(produce.EndpointTimeout, match="timed out"):
+        produce.default_transport("POST", "https://fixture/api/answers", {}, b"", 1.0)
+
+    assert issubclass(produce.EndpointTimeout, produce.ProduceError)
+
+
+def test_default_transport_keeps_unreachable_endpoints_fatal(monkeypatch):
+    def unreachable_urlopen(request, timeout):
+        raise urllib.error.URLError("name resolution failed")
+
+    monkeypatch.setattr(produce.urllib.request, "urlopen", unreachable_urlopen)
+
+    with pytest.raises(produce.ProduceError, match="unreachable") as error:
+        produce.default_transport("POST", "https://fixture/api/answers", {}, b"", 1.0)
+
+    assert not isinstance(error.value, produce.EndpointTimeout)
+
+
+def test_run_logs_one_warm_up_and_one_line_per_question(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("EVAL_TEST_KEY", "sekrit-value")
+    config = make_config(tmp_path, questions=2)
+    responses = [(200, {})]
+    for _ in range(2):
+        responses.extend([(200, answer_body()), (200, judge_body())])
+    transport = FakeTransport(responses)
+
+    produce.run(config, transport, lambda seconds: None)
+
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 3
+    assert re.fullmatch(r"warm-up status=200 duration=\d+\.\ds", lines[0])
+    question_pattern = (
+        r"question (\d+)/2 start=\d{2}:\d{2}:\d{2} end=\d{2}:\d{2}:\d{2} "
+        r"duration=\d+\.\ds answer=200 judge=200"
+    )
+    first, second = (re.fullmatch(question_pattern, line) for line in lines[1:])
+    assert first and first.group(1) == "1"
+    assert second and second.group(1) == "2"
+
+
+def test_the_warm_up_runs_once_and_a_timeout_does_not_fail_the_run(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("EVAL_TEST_KEY", "sekrit-value")
+    config = make_config(tmp_path, questions=2)
+    transport = ColdStartTransport()
+
+    document = produce.run(config, transport, lambda seconds: None)
+
+    assert document["gate"]["passed"] is True
+    assert transport.calls[0] == ("POST", config.endpoint, "hello")
+    assert [call[2] for call in transport.calls] == [
+        "hello",
+        "question 0",
+        None,
+        "question 1",
+        None,
+    ]
+    assert document["run"]["usage"]["answer_calls"] == 2
+    assert document["run"]["usage"]["answer_attempts"] == 2
+    assert document["run"]["usage"]["judge_calls"] == 2
+    assert document["run"]["usage"]["judge_attempts"] == 2
+
+
+@pytest.mark.parametrize(
+    ("response", "token"),
+    [
+        pytest.param((200, {"ok": 1}), "200", id="success"),
+        pytest.param((503, {"e": 1}), "HTTP 503", id="http-error"),
+    ],
+)
+def test_the_warm_up_logs_the_response_status(tmp_path, capsys, response, token):
+    produce.warm_up(make_config(tmp_path), FakeTransport([response]))
+
+    assert re.fullmatch(
+        rf"warm-up status={re.escape(token)} duration=\d+\.\ds",
+        capsys.readouterr().out.splitlines()[0],
+    )
+
+
+def test_the_warm_up_survives_timeouts_and_transport_errors(tmp_path, capsys):
+    config = make_config(tmp_path)
+    for error in (
+        produce.EndpointTimeout("endpoint timed out: fixture"),
+        ProduceError("endpoint unreachable: fixture"),
+    ):
+        produce.warm_up(config, ServingThenDeadTransport([], error))  # never raises
+
+        line = capsys.readouterr().out.splitlines()[0]
+        assert line.startswith("warm-up status=")
+        assert "duration=" in line

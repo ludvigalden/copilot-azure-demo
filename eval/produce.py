@@ -90,6 +90,10 @@ class ProduceError(RuntimeError):
     """The run cannot proceed honestly; nothing speculative is written."""
 
 
+class EndpointTimeout(ProduceError):
+    """The endpoint missed its request timeout; retried within the caps."""
+
+
 class BudgetExceeded(ProduceError):
     """The request budget is spent; the run stops rather than overspending."""
 
@@ -167,6 +171,7 @@ class AnswerOutcome:
     citations: tuple[tuple[str, str], ...] = ()
     chunks: tuple[tuple[str, str], ...] = ()
     error: str = ""
+    status: str = ""
 
 
 @dataclass(frozen=True)
@@ -179,6 +184,7 @@ class JudgmentOutcome:
     relevance_rationale: str = ""
     model: str = ""
     error: str = ""
+    status: str = ""
 
 
 def response_document(response: HttpResponse) -> dict:
@@ -236,7 +242,7 @@ def default_transport(
     except urllib.error.URLError as error:
         raise ProduceError(f"endpoint unreachable: {url}: {error.reason}") from error
     except TimeoutError as error:
-        raise ProduceError(f"endpoint timed out: {url}") from error
+        raise EndpointTimeout(f"endpoint timed out: {url}") from error
 
 
 def load_dataset(path: Path) -> list[GoldenQuestion]:
@@ -318,6 +324,11 @@ def _retryable(status: int) -> bool:
     return status == 429 or 500 <= status <= 599
 
 
+def status_token(status: int) -> str:
+    """The compact status field: 200, HTTP 429, or HTTP 503."""
+    return str(status) if status == 200 else f"HTTP {status}"
+
+
 def ask_answer(
     transport: Transport,
     endpoint: str,
@@ -329,15 +340,23 @@ def ask_answer(
     body = json.dumps({"question": question}).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     error = ""
+    status = ""
     for attempt in range(ANSWER_ATTEMPTS_PER_QUESTION):
         budget.charge_answer_attempt()
-        response = transport(
-            "POST",
-            endpoint,
-            headers,
-            body,
-            budget.remaining_timeout(ANSWER_TIMEOUT_SECONDS),
-        )
+        try:
+            response = transport(
+                "POST",
+                endpoint,
+                headers,
+                body,
+                budget.remaining_timeout(ANSWER_TIMEOUT_SECONDS),
+            )
+        except EndpointTimeout:
+            status = "timeout"
+            error = f"endpoint timed out: {endpoint}"
+            sleep(ANSWER_RETRY_BACKOFF_SECONDS * (attempt + 1))
+            continue
+        status = status_token(response.status)
         if response.status == 200:
             document = response_document(response)
             if (
@@ -376,6 +395,7 @@ def ask_answer(
                     (str(item.get("title", "")), str(item.get("content", "")))
                     for item in document.get("chunks") or []
                 ),
+                status=status,
             )
         error = (
             f"HTTP {response.status}: {response.body[:200].decode('utf-8', 'replace')}"
@@ -384,7 +404,9 @@ def ask_answer(
             sleep(ANSWER_RETRY_BACKOFF_SECONDS * (attempt + 1))
             continue
         break
-    return AnswerOutcome(ok=False, error=error or "the answer attempts were exhausted")
+    return AnswerOutcome(
+        ok=False, error=error or "the answer attempts were exhausted", status=status
+    )
 
 
 def judge_answer(
@@ -411,15 +433,27 @@ def judge_answer(
         raise BudgetExceeded("judge input exceeds 8000 UTF-8 bytes")
     headers = {"Content-Type": "application/json", "api-key": api_key}
     error = ""
+    status = ""
     for attempt in range(JUDGE_ATTEMPTS_PER_QUESTION):
         budget.charge_judge_attempt()
         reservation = len(body) + JUDGE_MAX_OUTPUT_TOKENS
         if budget.reserved_judge_tokens + reservation > budget.judge_token_cap:
             raise BudgetExceeded("judge token reservation budget spent")
         budget.reserved_judge_tokens += reservation
-        response = transport(
-            "POST", url, headers, body, budget.remaining_timeout(JUDGE_TIMEOUT_SECONDS)
-        )
+        try:
+            response = transport(
+                "POST",
+                url,
+                headers,
+                body,
+                budget.remaining_timeout(JUDGE_TIMEOUT_SECONDS),
+            )
+        except EndpointTimeout:
+            status = "timeout"
+            error = f"endpoint timed out: {url}"
+            sleep(JUDGE_RETRY_BACKOFF_SECONDS * (attempt + 1))
+            continue
+        status = status_token(response.status)
         if response.status == 200:
             document = response_document(response)
             usage = document.get("usage")
@@ -467,6 +501,7 @@ def judge_answer(
                 relevance_rationale=why_relevant,
                 model=str(document.get("model", "")),
                 error=parse_error,
+                status=status,
             )
         error = (
             f"HTTP {response.status}: {response.body[:200].decode('utf-8', 'replace')}"
@@ -475,7 +510,9 @@ def judge_answer(
             sleep(JUDGE_RETRY_BACKOFF_SECONDS * (attempt + 1))
             continue
         break
-    return JudgmentOutcome(error=error or "the judge attempts were exhausted")
+    return JudgmentOutcome(
+        error=error or "the judge attempts were exhausted", status=status
+    )
 
 
 def format_context(chunks: tuple[tuple[str, str], ...]) -> str:
@@ -510,6 +547,30 @@ def cost_block(budget: Budget) -> dict[str, Any]:
     }
 
 
+def warm_up(config: RunConfig, transport: Transport) -> None:
+    """One best-effort POST so a scale-to-zero app is hot before measuring."""
+    started = time.monotonic()
+    status = ""
+    try:
+        response = transport(
+            "POST",
+            config.endpoint,
+            {"Content-Type": "application/json"},
+            json.dumps({"question": "hello"}).encode("utf-8"),
+            ANSWER_TIMEOUT_SECONDS,
+        )
+    except EndpointTimeout:
+        status = "timeout"
+    except ProduceError as error:
+        status = f"error ({error})"
+    else:
+        status = status_token(response.status)
+    print(
+        f"warm-up status={status} duration={time.monotonic() - started:.1f}s",
+        flush=True,
+    )
+
+
 def run(
     config: RunConfig, transport: Transport, sleep: Callable[[float], None]
 ) -> dict[str, Any]:
@@ -522,6 +583,7 @@ def run(
         )
     questions = load_dataset(config.dataset_path)
     dataset_bytes = config.dataset_path.read_bytes()
+    warm_up(config, transport)
     config.started_at = datetime.now(UTC).isoformat()
     budget = Budget(
         answer_attempt_cap=ANSWER_ATTEMPTS_PER_QUESTION * len(questions),
@@ -540,7 +602,9 @@ def run(
     sleep = bounded_sleep
     rows: list[dict[str, Any]] = []
     judge_model = ""
-    for question in questions:
+    for number, question in enumerate(questions, start=1):
+        question_started = time.monotonic()
+        question_start = datetime.now(UTC).strftime("%H:%M:%S")
         counters_before = {
             key: getattr(budget, key)
             for key in (
@@ -561,6 +625,7 @@ def run(
             "answer_error": answer.error if not answer.ok else None,
         }
         judgment_error = ""
+        judge_status = "skipped"
         if not answer.ok:
             judgment_error = "no answer to judge"
             filenames: tuple[str, ...] = ()
@@ -577,6 +642,7 @@ def run(
                 answer=answer.text,
             )
             judgment = judge_answer(transport, config, api_key, prompt, budget, sleep)
+            judge_status = judgment.status
             judgment_error = judgment.error
             question_model = judgment.model
             if judge_model and judgment.model != judge_model:
@@ -604,6 +670,15 @@ def run(
         }
         row["usage"]["judge_model"] = question_model
         rows.append(row)
+        question_end = datetime.now(UTC).strftime("%H:%M:%S")
+        print(
+            f"question {number}/{len(questions)} start={question_start} "
+            f"end={question_end} "
+            f"duration={time.monotonic() - question_started:.1f}s "
+            f"answer={answer.status} "
+            f"judge={judge_status}",
+            flush=True,
+        )
         write_document(
             document_so_far(
                 config, questions, dataset_bytes, budget, rows, judge_model
