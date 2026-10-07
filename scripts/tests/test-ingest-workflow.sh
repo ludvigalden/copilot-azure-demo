@@ -274,50 +274,11 @@ print("ok: the locked wrapper serializes standalone ingestion against a "
       "staging push")
 PY
 else
-    # PyYAML is unavailable, so this falls back to textual assertions.
-    # It pins the exact expected lines instead of parsing; it cannot
-    # evaluate the event gates, only verify they are present verbatim.
-    grep -q '^concurrency:' "$workflow" \
-        || fail "no wrapper workflow-level concurrency block (grep fallback)"
-    grep -q '^  group: shared-target-demo$' "$workflow" \
-        || fail "wrapper concurrency group is not the shared target (grep fallback)"
-    grep -q '^  cancel-in-progress: false$' "$workflow" \
-        || fail "wrapper cancel-in-progress is not explicitly false (grep fallback)"
-    grep -q 'uses: ./.github/workflows/ingest-candidate.yml' "$workflow" \
-        || fail "the wrapper does not call the ingest candidate body (grep fallback)"
-    grep -q 'secrets: inherit' "$workflow" \
-        || fail "the wrapper call does not inherit secrets (grep fallback)"
-    grep -q '^  pull_request:' "$workflow" \
-        || fail "the wrapper pull_request trigger is missing (grep fallback)"
-    grep -q '^  schedule:' "$workflow" \
-        || fail "the wrapper schedule trigger is missing (grep fallback)"
-    grep -q '^  workflow_dispatch:' "$workflow" \
-        || fail "the wrapper workflow_dispatch trigger is missing (grep fallback)"
-    if grep -q '^  workflow_call:' "$workflow"; then
-        fail "the wrapper declares a workflow_call trigger (grep fallback)"
-    fi
-    if grep -q '^concurrency:' "$body"; then
-        fail "the candidate body declares a workflow-level concurrency block (grep fallback)"
-    fi
-    grep -q '^  workflow_call:' "$body" \
-        || fail "the candidate body lacks the workflow_call trigger (grep fallback)"
-    grep -q 'needs: \[validate-kb, push-staging, scheduled-eval\]' "$body" \
-        || fail "the prod job does not need push-staging or validate-kb (grep fallback)"
-    grep -q '^    needs: validate-kb$' "$body" \
-        || fail "the staging job does not need validate-kb (grep fallback)"
-    if grep -q 'continue-on-error' "$body"; then
-        fail "a publishing job carries continue-on-error (grep fallback)"
-    fi
-    if grep -Eq 'always\(|failure\(|cancelled\(' "$body"; then
-        fail "a status function appears in a job or step condition (grep fallback)"
-    fi
-    grep -q "github.event_name != 'pull_request'" "$body" \
-        || fail "the staging event gate is missing (grep fallback)"
-    grep -q "github.event_name == 'schedule'" "$body" \
-        || fail "the prod schedule gate is missing (grep fallback)"
-    grep -q '!github.event.act' "$body" \
-        || fail "the prod act gate is missing (grep fallback)"
-    grep -q 'release_candidate' "$infra_body" \
-        || fail "the infra candidate body lacks the release_candidate input (grep fallback)"
-    echo "ok: ingest workflow gates verified textually (PyYAML unavailable)"
+    # PyYAML is unavailable, so the structural gates cannot run. A
+    # degraded textual verdict must never stand in for them: a run
+    # whose validator could not execute is a failure, not a pass with
+    # commentary. Skip loudly and let the caller decide whether a skip
+    # is acceptable in this environment.
+    echo "skip: PyYAML is unavailable; the ingest workflow structural gates cannot run" >&2
+    exit 77
 fi

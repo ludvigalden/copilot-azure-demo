@@ -25,12 +25,23 @@ cd "$(git rev-parse --show-toplevel)"
 # scan <repo-root>: print one FAIL line per violation to stderr and
 # return nonzero when any workflow under <repo-root>/.github/workflows
 # invokes a repo .sh script via `sh` that is not POSIX sh. Reads the
-# working tree through git grep, so uncommitted edits are seen.
+# working tree through git grep, so uncommitted edits are seen. Only a
+# clean scan counts: git grep matching nothing (exit 1) is an empty
+# result, but a git grep error (exit >= 2) fails the scan instead of
+# passing as one.
 scan() {
     _repo=$1
     _hits=$(git -C "$_repo" grep -nE \
         '(^|[^A-Za-z0-9_])sh[[:space:]]+(\./)?[A-Za-z0-9_./-]+\.sh([^A-Za-z0-9_./-]|$)' \
-        -- .github/workflows || true)
+        -- .github/workflows) && _rc=0 || _rc=$?
+    case $_rc in
+    0 | 1) ;;
+    *)
+        printf 'FAIL scan failed: git grep exited %s over %s/.github/workflows\n' \
+            "$_rc" "$_repo" >&2
+        return 1
+        ;;
+    esac
     _fail=0
     while IFS= read -r _hit; do
         [ -n "$_hit" ] || continue

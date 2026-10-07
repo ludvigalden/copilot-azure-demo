@@ -306,32 +306,11 @@ print("ok: a release holder locks every standalone ingest and infra "
       "every wrapper mutation flips the verdict")
 PY
 else
-    # PyYAML is unavailable, so this falls back to textual pins for the
-    # lease ownership and the lease-free bodies; the interleaving and
-    # mutation derivation themselves need the YAML parser.
-    for name in release ingest infra; do
-        grep -q '^  group: shared-target-demo$' "$workflows/$name.yml" \
-            || fail "$name wrapper does not hold the shared-target lease (grep fallback)"
-        grep -q '^  cancel-in-progress: false$' "$workflows/$name.yml" \
-            || fail "$name wrapper cancel-in-progress is not false (grep fallback)"
-        grep -q "uses: ./.github/workflows/$name-candidate.yml" "$workflows/$name.yml" \
-            || fail "$name wrapper does not call its candidate body (grep fallback)"
-        if grep -q '^  workflow_call:' "$workflows/$name.yml"; then
-            fail "$name wrapper declares a workflow_call trigger (grep fallback)"
-        fi
-    done
-    for name in release ingest infra; do
-        if grep -q '^concurrency:' "$workflows/$name-candidate.yml"; then
-            fail "$name candidate body declares a workflow-level lease (grep fallback)"
-        fi
-        if grep -q 'shared-target-demo' "$workflows/$name-candidate.yml"; then
-            fail "$name candidate body carries the shared group (grep fallback)"
-        fi
-    done
-    grep -q 'uses: ./.github/workflows/ingest-candidate.yml' "$workflows/release-candidate.yml" \
-        || fail "the release body does not call the ingest body (grep fallback)"
-    grep -q 'uses: ./.github/workflows/infra-candidate.yml' "$workflows/release-candidate.yml" \
-        || fail "the release body does not call the infra body (grep fallback)"
-    echo "ok: wrapper leases and lease-free bodies pinned textually; "
-    echo "interleaving derivation skipped (PyYAML unavailable)"
+    # PyYAML is unavailable, so the interleaving derivation and the
+    # mutation controls cannot run. A degraded textual verdict must
+    # never stand in for them: a run whose validator could not execute
+    # is a failure, not a pass with commentary. Skip loudly and let the
+    # caller decide whether a skip is acceptable in this environment.
+    echo "skip: PyYAML is unavailable; the shared-target interleaving gates cannot run" >&2
+    exit 77
 fi
