@@ -122,3 +122,12 @@ terraform.rc
 !services/
 !.terraform.lock.hcl
 !*.tfvars.example
+# The security-scan config is generated-but-committed: CI and every fresh
+# clone run the scanner with it, so it must be trackable. Everything else
+# under .config/ stays local-only by policy.
+!.config/
+.config/*
+!.config/generated/
+!.config/generated/tools/
+!.config/generated/tools/security/
+!.config/generated/tools/security/betterleaks.toml

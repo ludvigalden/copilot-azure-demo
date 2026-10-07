@@ -1,0 +1,101 @@
+# Secret and policy scan — the repository-verifiable evidence surface.
+#
+# This config is committed so that a fresh clone can reproduce the
+# no-secrets and no-trace verdicts without depending on any local
+# script: run both scan forms with the pinned binary and this config.
+#
+#   betterleaks fs .  --config .config/generated/tools/security/betterleaks.toml
+#   betterleaks git . --config .config/generated/tools/security/betterleaks.toml
+#
+# The two forms cover the working tree (tracked, untracked, and
+# local-only files) and every commit's patch fragments across all refs.
+# Findings exit non-zero, so the same invocation is the CI gate.
+#
+# Why the token patterns below look broken: several deny-list tokens are
+# strings this repository's own no-trace rule forbids in committed
+# content. Expressing them directly would make this file trip the very
+# scan it defines (the self-trip problem). Each token therefore carries
+# exactly one character spelled as a single-member character class
+# ( [r] matches "r" ), which leaves the regex semantics byte-identical
+# while keeping the banned literal out of the file. Do not "fix" these.
+
+title = 'secret and policy scan'
+minVersion = 'v2.0.0-rc.1'
+
+# Local-only material is excluded from the tree scan form only. The
+# repository's ignore policy declares these paths never-committed; their
+# contents are governed by the ignore policy and the local secret-file
+# doctrine, not by the committed-material verdict. History patches are
+# never path-filtered: anything a past commit actually recorded is
+# scanned wherever it lives.
+prefilter = '''
+(
+  matchesAny(attributes["path"], [
+    `\.(?:git|terraform|venv|cache|ruff_cache|pytest_cache|mypy_cache|idea|vscode|[c]laude|codex|cursor|windsurf|gemini|ctx|work)(?:/|$)`,
+    `(?i)(?:^|/)(?:bin|obj|debug|release)(?:/|$)`,
+    `(?:^|/)[^/]*\.tfstate(?:\.[^/]*)?$`,
+    `(?:^|/)\.config/[^/]*\.toml$`,
+    `(?:^|/)\.actrc$`,
+    `(?:^|/)\.vars$`,
+    `(?:^|/)event\.json$`,
+    `(?:^|/)release-identity\.json$`,
+    `(?i)(?:^|/)\.env$`,
+    `(?i)(?:^|/)\.env\.local$`,
+    `(?i)(?:^|/)\.env\..*\.local$`,
+    `(?i)(?:^|/)\.dev\.vars(?:\..*)?$`,
+    `(?i)(?:^|/)[^/]*\.(?:key|pem)$`,
+    `(?i)(?:^|/)service-account[^/]*\.json$`,
+    `(?i)(?:^|/)(?:gcp|aws|azure)-[^/]*\.json$`,
+    `(?i)(?:^|/)deploy_key[^/]*$`,
+  ])
+  && attributes["resource"] != "git.patch_content"
+)
+'''
+
+[extend]
+useDefault = true
+
+# One finding per denied token occurrence in file content, commit
+# messages, and history patches. The alternation members are the
+# deny-list entries of the no-trace rule (word-bounded where a token
+# could occur inside an ordinary word), plus the vendor-name ban.
+[[rules]]
+id = 'denied-token'
+description = 'Content carries a denied token; the no-trace rule bans these strings in committed material.'
+regex = '''(?i)(\b[r]ig\b|[r]epoci|[r]epoconf|[c]txconf|[w]orkmod|[a]gentinit|[f]lexbin|\.[c]tx|_[r]epoconf|[s]igfrid|[a]rtifact_baseline|\.config/git\.[t]oml|\b[c]laude\b|\b[a]nthropic\b|co-[a]uthored-by|[c]loudflare)'''
+
+# The same deny list applied to file paths, so a banned token in a file
+# name is a finding even when the content is clean.
+[[rules]]
+id = 'denied-token-path'
+description = 'File path carries a denied token; the no-trace rule bans these strings in committed names.'
+path = '''(?i)(\b[r]ig\b|[r]epoci|[r]epoconf|[c]txconf|[w]orkmod|[a]gentinit|[f]lexbin|\.[c]tx|_[r]epoconf|[s]igfrid|[a]rtifact_baseline|\.config/git\.[t]oml|\b[c]laude\b|\b[a]nthropic\b|co-[a]uthored-by|[c]loudflare)'''
+
+# Internal build-phase wording ban. The legacy check applies this to the
+# tree scan only, so history fragments are filtered out here.
+[[rules]]
+id = 'phase-language'
+description = 'Content carries internal build-phase wording.'
+regex = '''(?i)([p]hases?\s*\d|verified by [b]uild|\bthe (?:evaluation|later|next) [p]hase\b)'''
+filter = '''attributes["resource"] == "git.patch_content"'''
+
+# The deny list over commit messages: every patch fragment is a
+# candidate and the filter keeps only fragments whose commit message
+# carries a denied token. Betterleaks does not scan message text
+# directly, so the check rides the per-fragment git.message attribute;
+# a commit with the token reports once per fragment it touches.
+[[rules]]
+id = 'denied-commit-message'
+description = 'Commit message carries a denied token.'
+regex = '''(?s).+'''
+filter = '''!matchesAny(attributes["git.message"], [`(?i)(\b[r]ig\b|[r]epoci|[r]epoconf|[c]txconf|[w]orkmod|[a]gentinit|[f]lexbin|\.[c]tx|_[r]epoconf|[s]igfrid|[a]rtifact_baseline|\.config/git\.[t]oml|\b[c]laude\b|\b[a]nthropic\b|co-[a]uthored-by|[c]loudflare)`])'''
+
+# The public hostname may appear in README.md only — in the tree and,
+# per commit fragment, in history: a fragment outside README.md fires
+# even when the same commit also touches README.md (stricter than the
+# per-commit adjacency the legacy check used; the stricter form wins).
+[[rules]]
+id = 'public-hostname-placement'
+description = 'The public hostname appears outside README.md.'
+regex = '''copilot-azure\.demo\.ludvigalden\.[c]om'''
+filter = '''matchesAny(attributes["path"], [`(?:^|/)README\.md$`])'''
