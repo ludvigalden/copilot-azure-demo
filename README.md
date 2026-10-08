@@ -219,6 +219,9 @@ development section above covers the zero-Azure setup.
 - [ADR 0004](docs/adr/0004-infrastructure-and-delivery.md) — the infrastructure and delivery decisions.
 - [ADR 0005](docs/adr/0005-agent-in-code.md) — why the conversational agent
   is ordinary code, with the Power Platform agent banked.
+- [ADR 0007](docs/adr/0007-releasable-delivery-and-a11y.md) — the
+  pipeline's entrypoint/candidate shape, its release-evidence chain,
+  caller-event gates, and the accessible conversation feed.
 - [The conversational agent](docs/agent.md) — the bot, its intents, its
   channels, and the headless proof.
 - [Local workflow runs](docs/local-loop.md) — running the
