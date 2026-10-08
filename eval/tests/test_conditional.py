@@ -2946,3 +2946,224 @@ def test_authority_singleton_guard_control(prospective_route, monkeypatch, guard
     with pytest.raises(pytest.fail.Exception, match="DID NOT RAISE"):
         rejected()
     assert_no_release_work(h)
+
+
+# Captured ARM GET of the ai account: properties carries these tuple keys
+# at exactly these values and omits networkAcls, which ARM leaves out while
+# no network rules are configured. The payload's other properties keys are
+# not read by the capture path and stay out of the canned response; the
+# response id stays the harness resource id because arm() binds the
+# response to the requested resource.
+LIVE_AI_ENDPOINT = "https://copaz-ai.cognitiveservices.azure.com/"
+LIVE_AI_ABSENT_PROPERTIES = {
+    "endpoint": LIVE_AI_ENDPOINT,
+    "disableLocalAuth": False,
+    "publicNetworkAccess": "Enabled",
+    "customSubDomainName": "copaz-ai",
+}
+AI_PRESENT_NETWORK_ACLS = {"defaultAction": "Allow", "ipRules": []}
+
+
+def capture_with_arm_properties(h, ai_properties=None, search_properties=None):
+    """Run a real capture after re-pointing the canned ARM properties."""
+    plane_target = h["plane"]["target"]
+    if ai_properties is not None:
+        # The ai endpoint value couples to the index vectorizer and the app
+        # environment; carry the canned value through those consistently.
+        if ai_properties.get("endpoint") != h["plane"]["ai_endpoint"]:
+            endpoint_value = ai_properties["endpoint"]
+            h["definition"]["vectorSearch"]["vectorizers"][0]["azureOpenAIParameters"][
+                "resourceUri"
+            ] = endpoint_value
+            for route_target in h["targets"].values():
+                for item in h["responses"][route_target["app_resource_id"]][
+                    "properties"
+                ]["template"]["containers"][0]["env"]:
+                    if item["name"] == "OpenAI__Endpoint":
+                        item["value"] = endpoint_value
+        h["responses"][plane_target["ai_resource_id"]]["properties"] = copy.deepcopy(
+            ai_properties
+        )
+    if search_properties is not None:
+        h["responses"][plane_target["search_resource_id"]]["properties"] = (
+            copy.deepcopy(search_properties)
+        )
+    return b.AzureCapture(b.Deadline(2400, lambda: 0)).capture(h["targets"]["staging"])
+
+
+def baseline_from_capture(h, captured):
+    return {
+        "schema": "DependencyBaselineV1",
+        "candidate": copy.deepcopy(h["candidate"]),
+        "captured_at": "2020-01-01T00:00:00Z",
+        "planes": {"staging": captured, "production": copy.deepcopy(captured)},
+    }
+
+
+def test_actual_capture_ai_network_acls_absence_projects(prospective_route):
+    """An ARM-omitted networkAcls absence projects as a compared None."""
+    h = prospective_route
+    captured = capture_with_arm_properties(h, LIVE_AI_ABSENT_PROPERTIES)
+    assert captured["ai_configuration"] == {
+        "disableLocalAuth": False,
+        "publicNetworkAccess": "Enabled",
+        "networkAcls": None,
+        "customSubDomainName": "copaz-ai",
+    }
+    b.validate_configuration(captured["ai_configuration"], True)
+    assert captured["search_configuration"]["networkRuleSet"] is not None
+
+
+def test_actual_capture_search_network_rule_set_absence_projects(prospective_route):
+    """An ARM-omitted networkRuleSet absence projects as a compared None."""
+    h = prospective_route
+    search = copy.deepcopy(h["plane"]["search_configuration"])
+    del search["networkRuleSet"]
+    captured = capture_with_arm_properties(h, search_properties=search)
+    assert captured["search_configuration"]["networkRuleSet"] is None
+    b.validate_configuration(captured["search_configuration"], False)
+    assert captured["ai_configuration"]["networkAcls"] is not None
+
+
+def test_network_absence_recapture_is_stable(prospective_route):
+    """Absence is a stable comparable value, not automatic drift."""
+    h = prospective_route
+    captured = capture_with_arm_properties(h, LIVE_AI_ABSENT_PROPERTIES)
+    again = capture_with_arm_properties(h, LIVE_AI_ABSENT_PROPERTIES)
+    assert re.fullmatch(
+        r"[0-9a-f]{64}",
+        b.compare_planes(
+            baseline_from_capture(h, captured), lambda target: copy.deepcopy(again)
+        ),
+    )
+
+
+@pytest.mark.parametrize("direction", ["appears", "disappears"])
+def test_ai_network_acls_absence_change_is_dependency_drift(
+    prospective_route, direction
+):
+    """networkAcls None against a present form (either way) is drift."""
+    h = prospective_route
+    forms = {
+        "absent": LIVE_AI_ABSENT_PROPERTIES,
+        "present": dict(LIVE_AI_ABSENT_PROPERTIES, networkAcls=AI_PRESENT_NETWORK_ACLS),
+    }
+    first = forms["absent" if direction == "appears" else "present"]
+    later = forms["present" if direction == "appears" else "absent"]
+    captured = capture_with_arm_properties(h, first)
+    later_captured = capture_with_arm_properties(h, later)
+    with pytest.raises(b.BaselineError, match="^DEPENDENCY_DRIFT$"):
+        b.compare_planes(
+            baseline_from_capture(h, captured),
+            lambda target: copy.deepcopy(later_captured),
+        )
+
+
+@pytest.mark.parametrize("direction", ["appears", "disappears"])
+def test_search_network_rule_set_absence_change_is_dependency_drift(
+    prospective_route, direction
+):
+    """networkRuleSet None against a present form (either way) is drift."""
+    h = prospective_route
+    present = h["plane"]["search_configuration"]
+    absent = {key: value for key, value in present.items() if key != "networkRuleSet"}
+    forms = {"absent": absent, "present": present}
+    first = forms["absent" if direction == "appears" else "present"]
+    later = forms["present" if direction == "appears" else "absent"]
+    captured = capture_with_arm_properties(h, search_properties=first)
+    later_captured = capture_with_arm_properties(h, search_properties=later)
+    with pytest.raises(b.BaselineError, match="^DEPENDENCY_DRIFT$"):
+        b.compare_planes(
+            baseline_from_capture(h, captured),
+            lambda target: copy.deepcopy(later_captured),
+        )
+
+
+def test_ai_present_network_acls_projects(prospective_route):
+    """A valid present networkAcls projects its value unchanged."""
+    h = prospective_route
+    captured = capture_with_arm_properties(
+        h, dict(LIVE_AI_ABSENT_PROPERTIES, networkAcls=AI_PRESENT_NETWORK_ACLS)
+    )
+    assert captured["ai_configuration"]["networkAcls"] == AI_PRESENT_NETWORK_ACLS
+
+
+@pytest.mark.parametrize(
+    "network_acls,error",
+    [
+        ({"defaultAction": "Allow"}, "UNSUPPORTED_SCHEMA"),
+        ({"defaultAction": "Block", "ipRules": []}, "CONFIG_UNOBSERVABLE"),
+        ({"defaultAction": "Allow", "ipRules": "disabled"}, "CONFIG_UNOBSERVABLE"),
+        (
+            {
+                "defaultAction": "Allow",
+                "ipRules": [],
+                "virtualNetworkRules": [{"id": 1}],
+            },
+            "CONFIG_UNOBSERVABLE",
+        ),
+    ],
+)
+def test_ai_malformed_present_network_acls_rejects(
+    prospective_route, network_acls, error
+):
+    """Present-form shape checks are unchanged by the absence support."""
+    h = prospective_route
+    with pytest.raises(b.BaselineError, match="^" + error + "$"):
+        capture_with_arm_properties(
+            h, dict(LIVE_AI_ABSENT_PROPERTIES, networkAcls=network_acls)
+        )
+
+
+@pytest.mark.parametrize(
+    "network_rule_set,error",
+    [
+        ({"ipRules": []}, "UNSUPPORTED_SCHEMA"),
+        ({"ipRules": [], "bypass": "Everything"}, "CONFIG_UNOBSERVABLE"),
+        ({"ipRules": "disabled", "bypass": "None"}, "CONFIG_UNOBSERVABLE"),
+    ],
+)
+def test_search_malformed_present_network_rule_set_rejects(
+    prospective_route, network_rule_set, error
+):
+    """Present-form shape checks are unchanged by the absence support."""
+    h = prospective_route
+    search = dict(h["plane"]["search_configuration"], networkRuleSet=network_rule_set)
+    with pytest.raises(b.BaselineError, match="^" + error + "$"):
+        capture_with_arm_properties(h, search_properties=search)
+
+
+@pytest.mark.parametrize(
+    "absent_key",
+    ["disableLocalAuth", "publicNetworkAccess", "customSubDomainName"],
+)
+def test_ai_required_configuration_key_absence_fails_closed(
+    prospective_route, absent_key
+):
+    """Every ai tuple key outside the audited absence stays required."""
+    h = prospective_route
+    properties = {
+        key: value
+        for key, value in LIVE_AI_ABSENT_PROPERTIES.items()
+        if key != absent_key
+    }
+    with pytest.raises(b.BaselineError, match="^CONFIG_UNOBSERVABLE$"):
+        capture_with_arm_properties(h, properties)
+
+
+@pytest.mark.parametrize(
+    "absent_key",
+    ["authOptions", "disableLocalAuth", "publicNetworkAccess"],
+)
+def test_search_required_configuration_key_absence_fails_closed(
+    prospective_route, absent_key
+):
+    """Every search tuple key outside the audited absence stays required."""
+    h = prospective_route
+    search = {
+        key: value
+        for key, value in h["plane"]["search_configuration"].items()
+        if key != absent_key
+    }
+    with pytest.raises(b.BaselineError, match="^CONFIG_UNOBSERVABLE$"):
+        capture_with_arm_properties(h, search_properties=search)

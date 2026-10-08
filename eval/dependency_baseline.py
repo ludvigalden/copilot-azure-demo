@@ -614,6 +614,13 @@ def validate_app(app: Any) -> None:
 
 
 def validate_network(network: Any, ai: bool) -> None:
+    if network is None:
+        # ARM omits the rules key when no network rules are configured; the
+        # collector records that absence as None. The absence is a
+        # projectable state (cleared rules) and stays in the compared
+        # plane, so a later appearance or disappearance is drift. A
+        # present value keeps the full shape checks below unchanged.
+        return
     exact(
         network,
         {"defaultAction", "ipRules"} if ai else {"ipRules", "bypass"},
@@ -650,14 +657,23 @@ def validate_configuration(configuration: Any, ai: bool) -> None:
             "networkRuleSet",
         },
     )
+    if configuration["disableLocalAuth"] is None:
+        # Mandated on both services; absence is not a cleared state.
+        raise BaselineError("CONFIG_UNOBSERVABLE")
     boolean(configuration["disableLocalAuth"])
     if configuration["publicNetworkAccess"] not in ("Enabled", "Disabled"):
         raise BaselineError("CONFIG_UNOBSERVABLE")
     validate_network(configuration["networkAcls" if ai else "networkRuleSet"], ai)
     if ai:
+        if configuration["customSubDomainName"] is None:
+            # Mandated; absence is not a cleared state.
+            raise BaselineError("CONFIG_UNOBSERVABLE")
         identifier(configuration["customSubDomainName"])
     else:
         auth = configuration["authOptions"]
+        if auth is None:
+            # AAD-only access is mandated; absence is not a cleared state.
+            raise BaselineError("CONFIG_UNOBSERVABLE")
         exact(auth, {"aadOrApiKey"})
         exact(auth["aadOrApiKey"], {"aadAuthFailureMode"})
         if auth["aadOrApiKey"]["aadAuthFailureMode"] not in (
@@ -1269,7 +1285,13 @@ class AzureCapture:
                 ),
             ),
         ):
-            configuration[name] = {key: resource["properties"][key] for key in keys}
+            # ARM omits a properties key when the feature it names is
+            # unconfigured, so collect with .get: every tuple key lands in
+            # the projection as its own value (absent -> None) instead of
+            # the capture crashing. The None is part of the compared plane,
+            # so a later appearance or disappearance of the key is drift;
+            # validate_configuration rules which absences are acceptable.
+            configuration[name] = {key: resource["properties"].get(key) for key in keys}
             validate_configuration(configuration[name], name == "ai_configuration")
         url = search_endpoint + "/indexes/" + target["index_name"]
         definition = index_projection(
