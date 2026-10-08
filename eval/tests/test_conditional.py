@@ -1755,9 +1755,23 @@ def test_vectorizer_identity_and_authority_guards(fault, error):
     }
     definition["vectorSearch"]["vectorizers"] = [item]
     definition["vectorSearch"]["profiles"][0]["vectorizer"] = "vectorizer"
+    # ARM-shaped (echo keys absent): the projection carries the credential
+    # shape with None for absent observed values, never an identity echo.
     assert b.index_projection(definition, "embedding", "https://ai.example")[
         "vectorSearch"
-    ]["vectorizers"] == [item]
+    ]["vectorizers"] == [
+        {
+            "name": "vectorizer",
+            "kind": "azureOpenAI",
+            "customWebApiParameters": None,
+            "azureOpenAIParameters": {
+                "deploymentId": "embedding",
+                "resourceUri": "https://ai.example",
+                "modelName": None,
+                "credentialKind": "none",
+            },
+        }
+    ]
     parameters = item["azureOpenAIParameters"]
     if fault == "deployment":
         parameters["deploymentId"] = "other"
@@ -3167,3 +3181,315 @@ def test_search_required_configuration_key_absence_fails_closed(
     }
     with pytest.raises(b.BaselineError, match="^CONFIG_UNOBSERVABLE$"):
         capture_with_arm_properties(h, search_properties=search)
+
+
+# The Data Plane index GET echoes unset configuration as null keys and wraps
+# the payload in response-envelope metadata; ARM omits the same keys. These
+# tests pin the admission of that live shape (fixture copied byte-exact from
+# the live kb-staging GET) and the projection semantics: echoes are observed
+# and compared, the credential shape is classified without any value, and
+# everything outside the audited shape keeps failing closed.
+
+LIVE_INDEX_FIXTURE = Path(__file__).parent / "index-live-kb-staging.json"
+LIVE_INDEX_SHA256 = "e3a8ac3c74885187d2214efc58d20e44fbd02b299d69f904c24aed1bade3879f"
+LIVE_VECTORZIER_ENDPOINT = "https://copaz-ai.cognitiveservices.azure.com"
+LIVE_IDENTITY = (
+    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/demo/"
+    "providers/Microsoft.ManagedIdentity/userAssignedIdentities/demo"
+)
+
+
+def live_index_payload():
+    return json.loads(LIVE_INDEX_FIXTURE.read_bytes())
+
+
+def compliant_live_payload():
+    """Live payload with the one audited-contract normalization applied.
+
+    The captured kb-staging index deploys the embedding field with
+    retrievable false (infra/terraform/main/data.tf never sets retrievable
+    on it; the service default for vector fields is false). The audited
+    vector contract requires retrievable true -- the documents fingerprint
+    selects "embedding" and hashes per-document vectors, which only a
+    retrievable field serves -- so the byte-exact capture fails the
+    VECTORS_UNOBSERVABLE gate (pinned separately below) and the projection
+    tests normalize this single boolean in memory pending a ruling: fix the
+    Terraform and recreate the index, or change the audited contract.
+    """
+    payload = live_index_payload()
+    embedding = next(
+        field for field in payload["fields"] if field["name"] == "embedding"
+    )
+    embedding["retrievable"] = True
+    return payload
+
+
+def project_live(payload):
+    return b.index_projection(payload, "embedding-staging", LIVE_VECTORZIER_ENDPOINT)
+
+
+def contains_key(value, key):
+    if isinstance(value, dict):
+        return key in value or any(contains_key(item, key) for item in value.values())
+    if isinstance(value, list):
+        return any(contains_key(item, key) for item in value)
+    return False
+
+
+def vectorizer_item(**parameters):
+    base = {
+        "deploymentId": "embedding-staging",
+        "resourceUri": LIVE_VECTORZIER_ENDPOINT,
+    }
+    base.update(parameters)
+    return {
+        "name": "openai-vectorizer",
+        "kind": "azureOpenAI",
+        "azureOpenAIParameters": base,
+    }
+
+
+def project_vectorizer(item):
+    return b.vectorizer_projection(item, "embedding-staging", LIVE_VECTORZIER_ENDPOINT)
+
+
+def test_live_index_fixture_is_byte_exact():
+    import hashlib
+
+    assert (
+        hashlib.sha256(LIVE_INDEX_FIXTURE.read_bytes()).hexdigest() == LIVE_INDEX_SHA256
+    )
+
+
+def test_live_index_payload_projects_end_to_end():
+    payload = compliant_live_payload()
+    projection = project_live(payload)
+    assert projection["name"] == "kb-staging"
+    assert projection["description"] is None
+    assert projection["encryptionKey"] is None
+    assert projection["normalizers"] == []
+    assert projection["similarity"] == {
+        "@odata.type": "#Microsoft.Azure.Search.BM25Similarity",
+        "k1": None,
+        "b": None,
+    }
+    assert projection["semantic"]["configurations"][0]["name"] == "kb-staging-semantic"
+    # Fields, profiles, and algorithms are projected whole, so every echo
+    # (null analyzer on a string field, null compression, null
+    # exhaustiveKnnParameters) is part of the compared plane.
+    assert projection["fields"] == payload["fields"]
+    assert projection["vectorSearch"]["profiles"] == payload["vectorSearch"]["profiles"]
+    assert (
+        projection["vectorSearch"]["algorithms"]
+        == payload["vectorSearch"]["algorithms"]
+    )
+    assert projection["vectorSearch"]["vectorizers"] == [
+        {
+            "name": "openai-vectorizer",
+            "kind": "azureOpenAI",
+            "customWebApiParameters": None,
+            "azureOpenAIParameters": {
+                "deploymentId": "embedding-staging",
+                "resourceUri": LIVE_VECTORZIER_ENDPOINT,
+                "modelName": "text-embedding-3-small",
+                "credentialKind": "apiKey-present-redacted",
+            },
+        }
+    ]
+    assert not contains_key(projection, "apiKey")
+
+
+def test_live_index_embedding_retrievable_gap_fails_vectors_gate():
+    """Byte-exact capture fails the vector gate: live kb-staging drift.
+
+    The live index deploys embedding non-retrievable (Terraform never set
+    retrievable on the field) while the audited contract requires true
+    because the documents fingerprint selects and hashes per-document
+    vectors. This documents the open gap; invert this test together with
+    the fixture once the coordinator rules (infra fix or contract change).
+    """
+    with pytest.raises(b.BaselineError, match="^VECTORS_UNOBSERVABLE$"):
+        project_live(live_index_payload())
+
+
+def test_arm_shaped_definition_projects_absent_as_none():
+    """ARM omits what the service echoes; absence projects as None."""
+    definition = safe_index()
+    definition["vectorSearch"]["vectorizers"] = [
+        {
+            "name": "vectorizer",
+            "kind": "azureOpenAI",
+            "azureOpenAIParameters": {
+                "deploymentId": "embedding",
+                "resourceUri": "https://ai.example",
+            },
+        }
+    ]
+    projection = b.index_projection(definition, "embedding", "https://ai.example")
+    assert projection["description"] is None
+    assert projection["encryptionKey"] is None
+    assert projection["normalizers"] is None
+    assert projection["similarity"] is None
+    assert projection["semantic"] is None
+    vectorizer = projection["vectorSearch"]["vectorizers"][0]
+    assert vectorizer["customWebApiParameters"] is None
+    assert vectorizer["azureOpenAIParameters"]["modelName"] is None
+    assert vectorizer["azureOpenAIParameters"]["credentialKind"] == "none"
+    assert "authIdentity" not in vectorizer["azureOpenAIParameters"]
+
+
+@pytest.mark.parametrize(
+    "site",
+    [
+        "encryption_key_appearing",
+        "similarity_knob_change",
+        "semantic_config_change",
+        "field_analyzer_appearing",
+        "exhaustive_knn_appearing",
+        "profile_compression_appearing",
+        "model_name_change",
+        "credential_kind_flip",
+    ],
+)
+def test_live_projection_admits_and_compares_changed_values(site):
+    """Each admitted site carries its observed value into the comparison."""
+    clean = project_live(compliant_live_payload())
+    payload = compliant_live_payload()
+    if site == "encryption_key_appearing":
+        # A customer-managed key appearing later is ordinary drift, not a
+        # rejection: the observed value lands in the compared plane.
+        payload["encryptionKey"] = {
+            "keyVaultUri": "https://vault.vault.azure.net",
+            "keyName": "release-cmk",
+            "keyVersion": "0" * 32,
+        }
+    elif site == "similarity_knob_change":
+        payload["similarity"]["k1"] = 1.4
+    elif site == "semantic_config_change":
+        payload["semantic"]["configurations"][0]["rankingOrder"] = "OriginalScore"
+    elif site == "field_analyzer_appearing":
+        payload["fields"][0]["analyzer"] = "standard.lucene"
+    elif site == "exhaustive_knn_appearing":
+        payload["vectorSearch"]["algorithms"][0]["exhaustiveKnnParameters"] = {
+            "metric": "cosine",
+            "efSearch": 500,
+        }
+    elif site == "profile_compression_appearing":
+        payload["vectorSearch"]["profiles"][0]["compression"] = "scalar-quantization"
+    elif site == "model_name_change":
+        payload["vectorSearch"]["vectorizers"][0]["azureOpenAIParameters"][
+            "modelName"
+        ] = "text-embedding-3-large"
+    else:
+        parameters = payload["vectorSearch"]["vectorizers"][0]["azureOpenAIParameters"]
+        parameters.pop("apiKey")
+        parameters["authIdentity"] = LIVE_IDENTITY
+    projected = project_live(payload)
+    if site == "encryption_key_appearing":
+        assert projected["encryptionKey"] == payload["encryptionKey"]
+    elif site == "similarity_knob_change":
+        assert projected["similarity"] == payload["similarity"]
+    elif site == "semantic_config_change":
+        assert projected["semantic"] == payload["semantic"]
+    elif site == "field_analyzer_appearing":
+        assert projected["fields"] == payload["fields"]
+    elif site == "exhaustive_knn_appearing":
+        assert (
+            projected["vectorSearch"]["algorithms"]
+            == payload["vectorSearch"]["algorithms"]
+        )
+    elif site == "profile_compression_appearing":
+        assert (
+            projected["vectorSearch"]["profiles"] == payload["vectorSearch"]["profiles"]
+        )
+    elif site == "model_name_change":
+        assert (
+            projected["vectorSearch"]["vectorizers"][0]["azureOpenAIParameters"][
+                "modelName"
+            ]
+            == "text-embedding-3-large"
+        )
+    else:
+        parameters = projected["vectorSearch"]["vectorizers"][0][
+            "azureOpenAIParameters"
+        ]
+        assert parameters["credentialKind"] == "authIdentity"
+        assert parameters["authIdentity"] == LIVE_IDENTITY
+    assert projected != clean
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "unredacted_key",
+        "both_channels",
+        "redacted_marker_passes",
+        "authidentity_projects",
+        "both_absent_none",
+        "non_string_authority",
+    ],
+)
+def test_vectorizer_credential_shape_guards(case):
+    if case == "unredacted_key":
+        item = vectorizer_item(apiKey="real-credential-value")
+        with pytest.raises(
+            b.BaselineError, match="^INDEX_VECTORIZER_CREDENTIAL_UNOBSERVABLE$"
+        ) as raised:
+            project_vectorizer(item)
+        assert "real-credential-value" not in str(raised.value)
+    elif case == "both_channels":
+        item = vectorizer_item(apiKey="<redacted>", authIdentity=LIVE_IDENTITY)
+        with pytest.raises(
+            b.BaselineError, match="^INDEX_VECTORIZER_CREDENTIAL_UNOBSERVABLE$"
+        ):
+            project_vectorizer(item)
+    elif case == "redacted_marker_passes":
+        projected = project_vectorizer(vectorizer_item(apiKey="<redacted>"))
+        parameters = projected["azureOpenAIParameters"]
+        assert parameters["credentialKind"] == "apiKey-present-redacted"
+        assert "authIdentity" not in parameters
+        assert not contains_key(projected, "apiKey")
+    elif case == "authidentity_projects":
+        projected = project_vectorizer(vectorizer_item(authIdentity=LIVE_IDENTITY))
+        parameters = projected["azureOpenAIParameters"]
+        assert parameters["credentialKind"] == "authIdentity"
+        assert parameters["authIdentity"] == LIVE_IDENTITY
+        assert not contains_key(projected, "apiKey")
+    elif case == "both_absent_none":
+        projected = project_vectorizer(vectorizer_item())
+        parameters = projected["azureOpenAIParameters"]
+        assert parameters["credentialKind"] == "none"
+        assert "authIdentity" not in parameters
+        assert not contains_key(projected, "apiKey")
+    else:
+        item = vectorizer_item(authIdentity={"userAssignedIdentity": "canary"})
+        with pytest.raises(
+            b.BaselineError, match="^INDEX_VECTORIZER_AUTHORITY_UNOBSERVABLE$"
+        ):
+            project_vectorizer(item)
+
+
+def test_vectorizer_projection_never_contains_api_key():
+    """No passing credential shape projects an apiKey key at any depth."""
+    for item in (
+        vectorizer_item(apiKey="<redacted>"),
+        vectorizer_item(authIdentity=LIVE_IDENTITY),
+        vectorizer_item(),
+    ):
+        assert not contains_key(project_vectorizer(item), "apiKey")
+    assert not contains_key(project_live(compliant_live_payload()), "apiKey")
+
+
+@pytest.mark.parametrize(
+    ("dimensions", "error"),
+    [(None, "VECTORS_UNOBSERVABLE"), (True, "INVALID_NUMBER")],
+)
+def test_embedding_dimensions_echo_does_not_satisfy_vector_gate(dimensions, error):
+    """Only an actual integer satisfies the vector contract, not an echo."""
+    payload = compliant_live_payload()
+    embedding = next(
+        field for field in payload["fields"] if field["name"] == "embedding"
+    )
+    embedding["dimensions"] = dimensions
+    with pytest.raises(b.BaselineError, match="^" + error + "$"):
+        project_live(payload)

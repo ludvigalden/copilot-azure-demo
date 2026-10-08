@@ -895,36 +895,69 @@ def vectorizer_projection(
 
     The approved dependency identity binds deployment and endpoint here, then
     observes Search's system identity and its AI authority in every plane.
-    Keyed and explicit authIdentity configurations remain unsupported.
+    The credential SHAPE is part of the compared identity while the credential
+    VALUE is never observed: keyed and explicit authIdentity configurations
+    both project (apiKey-present-redacted / authIdentity / none), the service
+    redacts keyed values so rotations are inherently unobservable and do not
+    affect release identity, and an invalid key fails loudly at ingest
+    elsewhere. Unknown credential shapes and unredacted material fail closed.
     """
     parameters = item.get("azureOpenAIParameters") if isinstance(item, dict) else None
     if not isinstance(parameters, dict):
+        # Also the fail-closed branch for any other kind carrying credential
+        # material in a differently shaped parameters object.
         raise BaselineError("INDEX_VECTORIZER_UNOBSERVABLE")
-    if parameters.get("apiKey") is not None or item.get("apiKey") is not None:
+    # Classify credentials before structural admission so credential-bearing
+    # material is judged first: an unredacted or unknown shape is rejected
+    # even when the surrounding configuration is also malformed.
+    api_key = parameters.get("apiKey")
+    auth_identity = parameters.get("authIdentity")
+    if api_key is not None and auth_identity is not None:
+        # Both credential channels configured at once: an unknown shape.
         raise BaselineError("INDEX_VECTORIZER_CREDENTIAL_UNOBSERVABLE")
-    if (
-        parameters.get("authIdentity") is not None
-        or item.get("authIdentity") is not None
-    ):
-        raise BaselineError("INDEX_VECTORIZER_AUTHORITY_UNOBSERVABLE")
-    exact(item, {"name", "kind", "azureOpenAIParameters"})
+    if api_key is not None and api_key != "<redacted>":
+        # Unredacted credential material must never enter a projection.
+        raise BaselineError("INDEX_VECTORIZER_CREDENTIAL_UNOBSERVABLE")
+    if api_key is None and auth_identity is not None:
+        if not isinstance(auth_identity, str):
+            # The minimal classifiable authIdentity shape is a string; any
+            # other shape (object, number) stays unclassifiable and closed.
+            raise BaselineError("INDEX_VECTORIZER_AUTHORITY_UNOBSERVABLE")
+        credential_kind = "authIdentity"
+    elif api_key is not None:
+        # The service redacts keyed values to this exact marker; no apiKey
+        # value, not even the marker, is ever projected.
+        credential_kind = "apiKey-present-redacted"
+    else:
+        credential_kind = "none"
+    exact(item, {"name", "kind", "azureOpenAIParameters"}, {"customWebApiParameters"})
     identifier(item["name"])
     if item["kind"] != "azureOpenAI":
         raise BaselineError("INDEX_VECTORIZER_UNOBSERVABLE")
-    exact(parameters, {"deploymentId", "resourceUri"})
+    exact(
+        parameters,
+        {"deploymentId", "resourceUri"},
+        {"modelName", "apiKey", "authIdentity"},
+    )
     identifier(parameters["deploymentId"])
     endpoint(parameters["resourceUri"])
     if parameters["deploymentId"] != embedding_deployment or parameters[
         "resourceUri"
     ].rstrip("/") != ai_endpoint.rstrip("/"):
         raise BaselineError("INDEX_VECTORIZER_BINDING")
+    projected_parameters = {
+        "deploymentId": parameters["deploymentId"],
+        "resourceUri": parameters["resourceUri"],
+        "modelName": parameters.get("modelName"),
+        "credentialKind": credential_kind,
+    }
+    if credential_kind == "authIdentity":
+        projected_parameters["authIdentity"] = auth_identity
     return {
         "name": item["name"],
         "kind": item["kind"],
-        "azureOpenAIParameters": {
-            "deploymentId": parameters["deploymentId"],
-            "resourceUri": parameters["resourceUri"],
-        },
+        "customWebApiParameters": item.get("customWebApiParameters"),
+        "azureOpenAIParameters": projected_parameters,
     }
 
 
@@ -937,7 +970,17 @@ def index_projection(
         definition,
         {"name", "fields", "vectorSearch"},
         {
+            # Response-envelope metadata from the Data Plane GET: admitted so
+            # a live capture projects, never compared.
+            "@odata.context",
             "@odata.etag",
+            # Data Plane GET always echoes these; ARM omits them when unset.
+            # The three projected keys below land in the compared plane as
+            # their observed values, so a change (an encryptionKey appearing
+            # once a customer-managed key is configured) is ordinary drift.
+            "description",
+            "encryptionKey",
+            "normalizers",
             "scoringProfiles",
             "defaultScoringProfile",
             "corsOptions",
@@ -946,6 +989,8 @@ def index_projection(
             "tokenizers",
             "tokenFilters",
             "charFilters",
+            # similarity and semantic are projected whole like fields: their
+            # knob values (including null) are compared, not rejected.
             "similarity",
             "semantic",
         },
@@ -960,8 +1005,6 @@ def index_projection(
         "tokenizers",
         "tokenFilters",
         "charFilters",
-        "similarity",
-        "semantic",
     ):
         if definition.get(key) not in (None, []):
             raise BaselineError("INDEX_SCHEMA_UNOBSERVABLE")
@@ -983,6 +1026,15 @@ def index_projection(
                 "stored",
                 "dimensions",
                 "vectorSearchProfile",
+                # Unset lexical and vector options are echoed as null (or an
+                # empty synonymMaps list) by the Data Plane GET; the fields
+                # are projected whole, so these echo values are compared.
+                "analyzer",
+                "indexAnalyzer",
+                "searchAnalyzer",
+                "normalizer",
+                "vectorEncoding",
+                "synonymMaps",
             },
         )
         name = identifier(field["name"])
@@ -1003,9 +1055,11 @@ def index_projection(
         ):
             if key in field:
                 boolean(field[key])
-        if "dimensions" in field:
+        # A null echo means the option is unset; it stays in the projected
+        # field and is validated only when an actual value is present.
+        if field.get("dimensions") is not None:
             integer(field["dimensions"], 1, 4096)
-        if "vectorSearchProfile" in field:
+        if field.get("vectorSearchProfile") is not None:
             identifier(field["vectorSearchProfile"])
     if seen != {"id", "title", "content", "url", "embedding"}:
         raise BaselineError("INDEX_SCHEMA_UNOBSERVABLE")
@@ -1024,7 +1078,9 @@ def index_projection(
     ):
         raise BaselineError("INDEX_SCHEMA_UNOBSERVABLE")
     for profile in vector["profiles"]:
-        exact(profile, {"name", "algorithm"}, {"vectorizer"})
+        # compression is a Data Plane echo (null when unset) and profiles are
+        # projected whole, so its observed value is compared.
+        exact(profile, {"name", "algorithm"}, {"vectorizer", "compression"})
         identifier(profile["name"])
         identifier(profile["algorithm"])
         if "vectorizer" in profile:
@@ -1032,7 +1088,13 @@ def index_projection(
             if profile["vectorizer"] not in {item["name"] for item in projected}:
                 raise BaselineError("INDEX_VECTORIZER_UNOBSERVABLE")
     for algorithm in vector["algorithms"]:
-        exact(algorithm, {"name", "kind", "hnswParameters"})
+        # exhaustiveKnnParameters is a Data Plane echo (null when unset) and
+        # algorithms are projected whole, so its observed value is compared.
+        exact(
+            algorithm,
+            {"name", "kind", "hnswParameters"},
+            {"exhaustiveKnnParameters"},
+        )
         identifier(algorithm["name"])
         if algorithm["kind"] != "hnsw":
             raise BaselineError("INDEX_SCHEMA_UNOBSERVABLE")
@@ -1046,12 +1108,21 @@ def index_projection(
         field["name"] == "embedding"
         and field.get("retrievable") is True
         and field["type"] == "Collection(Edm.Single)"
-        and "dimensions" in field
+        # A null dimensions echo must not satisfy the vector contract: only
+        # an actual integer (not a bool masquerading as one) counts.
+        and type(field.get("dimensions")) is int
         for field in fields
     ):
         raise BaselineError("VECTORS_UNOBSERVABLE")
     return {
         "name": definition["name"],
+        # Projected whole: observed values (null when the service echoes an
+        # unset option, None when ARM omits the key) are the compared state.
+        "description": definition.get("description"),
+        "encryptionKey": definition.get("encryptionKey"),
+        "normalizers": definition.get("normalizers"),
+        "similarity": definition.get("similarity"),
+        "semantic": definition.get("semantic"),
         "fields": fields,
         "vectorSearch": {
             "profiles": vector["profiles"],
