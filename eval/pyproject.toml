@@ -5,7 +5,7 @@ description = "RAG evaluation and quality gate over the golden question set."
 license = "LicenseRef-Proprietary"
 classifiers = ["Private :: Do Not Upload"]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = ["PyYAML>=6.0.3,<7"]
 
 [dependency-groups]
 dev = ["pytest>=8.4", "ruff>=0.14"]

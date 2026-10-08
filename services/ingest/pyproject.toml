@@ -5,7 +5,7 @@ description = "Chunks the kb articles and pushes them into the search index."
 license = "LicenseRef-Proprietary"
 classifiers = ["Private :: Do Not Upload"]
 requires-python = ">=3.13"
-dependencies = ["azure-identity>=1.25,<2", "azure-search-documents>=12.0,<13", "openai>=3.22,<4"]
+dependencies = ["azure-identity>=1.25,<2", "azure-search-documents>=12.0,<13", "openai>=3.22,<4", "PyYAML>=6.0.3,<7"]
 
 [project.scripts]
 ingest = "ingest.__main__:main"

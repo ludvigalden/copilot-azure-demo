@@ -25,11 +25,11 @@ on:
   workflow_dispatch:
     inputs:
       release_app:
-        description: 'Intentionally release the app component from this ref'
+        description: "Intentionally release the app component from this ref"
         type: boolean
         default: false
       release_kb:
-        description: 'Intentionally release the knowledge base from this ref'
+        description: "Intentionally release the knowledge base from this ref"
         type: boolean
         default: false
 
@@ -47,8 +47,13 @@ concurrency:
 jobs:
   release:
     uses: ./.github/workflows/release-candidate.yml
+    with:
+      conditional_claim: >-
+        {"schema":"ReleaseEnvelopeV2","freshness_policy":"conditional_same_candidate_v1",
+         "authorize_refresh":true,"power_platform_mode":"dormant_non_writing"}
     permissions:
       contents: read
+      actions: read
       packages: write
       id-token: write
     secrets: inherit
