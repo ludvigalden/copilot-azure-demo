@@ -106,6 +106,22 @@ jobs:
             echo "staging environment to enable the staging import."
           fi
 
+      # The connector service validates the swagger host at import time
+      # and does not resolve @environmentVariables(...) there, so the
+      # configured path swaps a literal staging host into the checked-out
+      # source tree and packs its own zip for import. The shared
+      # unmanaged artifact keeps the environment-variable host and is
+      # never imported here. The host variable is dedicated for the same
+      # reason the gate's URL variable is: the repository-level names
+      # point at the production environment and must not be shadow-read.
+      - name: Resolve the staging API host for the connector
+        if: steps.gate.outputs.configured == 'true'
+        env:
+          API_HOST: ${{ vars.POWER_PLATFORM_STAGING_API_HOST }}
+        run: |
+          : "${API_HOST:?the staging environment must set POWER_PLATFORM_STAGING_API_HOST}"
+          echo "IT_SUPPORT_API_HOST=$API_HOST" >> "$GITHUB_ENV"
+
       - uses: azure/login@v2
         if: steps.gate.outputs.configured == 'true'
         with:
@@ -116,12 +132,29 @@ jobs:
       - uses: microsoft/powerplatform-actions/actions-install@v1.9.2
         if: steps.gate.outputs.configured == 'true'
 
+      - name: Point the connector at the staging host
+        if: steps.gate.outputs.configured == 'true'
+        env:
+          API_HOST: ${{ env.IT_SUPPORT_API_HOST }}
+        run: |
+          python3 scripts/swap-connector-host.py \
+            --host "$API_HOST" \
+            --solution-folder "$SOLUTION_FOLDER"
+
+      - name: Pack the staging solution
+        if: steps.gate.outputs.configured == 'true'
+        uses: microsoft/powerplatform-actions/pack-solution@v1.9.2
+        with:
+          solution-file: out/itsupport-staging.zip
+          solution-folder: ${{ env.SOLUTION_FOLDER }}
+          solution-type: Unmanaged
+
       - name: Import and publish the solution to staging
         if: steps.gate.outputs.configured == 'true'
         uses: microsoft/powerplatform-actions/import-solution@v1.9.2
         with:
           environment-url: ${{ vars.POWER_PLATFORM_STAGING_ENVIRONMENT_URL }}
-          solution-file: ${{ env.SOLUTION_FILE }}
+          solution-file: out/itsupport-staging.zip
           app-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           publish-changes: true
