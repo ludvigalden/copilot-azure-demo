@@ -381,7 +381,12 @@ def validate_candidate(candidate: Any) -> None:
         validate_model_name(candidate[f"{role}_model"])
 
 
-def validate_identity(identity: Any) -> None:
+def list_of_objects(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, dict) for item in value)
+
+
+def validate_identity(identity: Any) -> dict[str, Any]:
+    """Validate a user-assigned identity and canonicalize its ARM GET form."""
     exact(identity, {"type", "userAssignedIdentities"})
     if (
         identity["type"] != "UserAssigned"
@@ -389,28 +394,80 @@ def validate_identity(identity: Any) -> None:
         or not identity["userAssignedIdentities"]
     ):
         raise BaselineError("IDENTITY_UNOBSERVABLE")
+    canonical: dict[str, Any] = {}
     for resource, item in identity["userAssignedIdentities"].items():
+        # ARM GET normalizes the resourceGroups segment to lowercase in
+        # userAssignedIdentities dictionary keys while the rest of the same
+        # response keeps canonical casing. Restore the canonical segment
+        # here, and only here, so the projection stores the grammar's own
+        # form and the comparison stays exact instead of casing-fragile.
+        resource = text(resource).replace("/resourcegroups/", "/resourceGroups/")
         resource_id(resource)
         if "/Microsoft.ManagedIdentity/userAssignedIdentities/" not in resource:
             raise BaselineError("IDENTITY_UNOBSERVABLE")
         exact(item, {"clientId", "principalId"})
         uuid(item["clientId"])
         uuid(item["principalId"])
+        canonical[resource] = {
+            "clientId": item["clientId"],
+            "principalId": item["principalId"],
+        }
+    return {"type": identity["type"], "userAssignedIdentities": canonical}
 
 
-def validate_ingress(ingress: Any) -> None:
+def validate_ingress(ingress: Any) -> dict[str, Any]:
+    """Validate the live thirteen-key ARM ingress and canonicalize it."""
     exact(
         ingress,
-        {"fqdn", "external", "targetPort", "traffic"},
-        {"transport", "allowInsecure"},
+        {
+            "fqdn",
+            "external",
+            "targetPort",
+            "traffic",
+            "transport",
+            "allowInsecure",
+            "customDomains",
+            "additionalPortMappings",
+            "clientCertificateMode",
+            "corsPolicy",
+            "stickySessions",
+            "exposedPort",
+            "ipSecurityRestrictions",
+        },
     )
     host(ingress["fqdn"])
     boolean(ingress["external"])
     integer(ingress["targetPort"], 1, 65535)
-    if "transport" in ingress and ingress["transport"] not in ("auto", "http", "http2"):
+    # ARM GET answers with canonical token casing ("Auto") while the PUT
+    # grammar is lowercase; project the lowercase token so response casing
+    # cannot mask drift and the stored baseline carries the authored form.
+    transport = text(ingress["transport"]).lower()
+    if transport not in ("auto", "http", "http2"):
         raise BaselineError("APP_UNOBSERVABLE")
-    if "allowInsecure" in ingress:
-        boolean(ingress["allowInsecure"])
+    boolean(ingress["allowInsecure"])
+    domains = ingress["customDomains"]
+    if domains is not None:
+        if not isinstance(domains, list) or not domains:
+            raise BaselineError("APP_UNOBSERVABLE")
+        for domain in domains:
+            exact(domain, {"bindingType", "certificateId", "name"})
+            if domain["bindingType"] not in ("SniEnabled", "Disabled"):
+                raise BaselineError("APP_UNOBSERVABLE")
+            resource_id(domain["certificateId"])
+            host(domain["name"])
+    integer(ingress["exposedPort"], 0, 65535)
+    # System-managed knobs, asserted equal to their disabled values: any
+    # deviation is an exposure or affinity change that fails closed rather
+    # than being silently dropped from the comparison.
+    if (
+        ingress["additionalPortMappings"]
+        or ingress["clientCertificateMode"] is not None
+        or ingress["corsPolicy"] is not None
+        or ingress["stickySessions"] is not None
+        or ingress["exposedPort"] != 0
+        or ingress["ipSecurityRestrictions"] != []
+    ):
+        raise BaselineError("APP_UNOBSERVABLE")
     traffic = ingress["traffic"]
     if not isinstance(traffic, list) or len(traffic) != 1:
         raise BaselineError("APP_UNOBSERVABLE")
@@ -419,6 +476,7 @@ def validate_ingress(ingress: Any) -> None:
     integer(traffic[0]["weight"], 0, 100)
     if traffic != [{"latestRevision": True, "weight": 100}]:
         raise BaselineError("APP_UNOBSERVABLE")
+    return dict(ingress) | {"transport": transport}
 
 
 def validate_resources(resources: Any) -> None:
@@ -434,27 +492,38 @@ def validate_resources(resources: Any) -> None:
 def validate_scale(scale: Any) -> None:
     exact(
         scale,
-        {"minReplicas", "maxReplicas"},
-        {"rules", "cooldownPeriod", "pollingInterval"},
+        {
+            "minReplicas",
+            "maxReplicas",
+            "rules",
+            "cooldownPeriod",
+            "pollingInterval",
+        },
     )
-    for key in ("minReplicas", "maxReplicas"):
-        integer(scale[key], 0, 1000)
-    if scale["minReplicas"] > scale["maxReplicas"]:
+    # ARM GET returns explicit nulls for an unset replica floor and for
+    # absent custom scaling rules; null is the deterministic encoding of
+    # the platform default here and is projected as None so None compares
+    # to None and any change drifts.
+    if scale["minReplicas"] is not None:
+        integer(scale["minReplicas"], 0, 1000)
+    integer(scale["maxReplicas"], 0, 1000)
+    if scale["minReplicas"] is not None and scale["minReplicas"] > scale["maxReplicas"]:
         raise BaselineError("APP_UNOBSERVABLE")
     for key in ("cooldownPeriod", "pollingInterval"):
-        if key in scale:
+        if scale[key] is not None:
             integer(scale[key], 1, 3600)
-    if not isinstance(scale.get("rules", []), list):
-        raise BaselineError("APP_UNOBSERVABLE")
-    for rule in scale.get("rules", []):
-        exact(rule, {"name", "http"})
-        identifier(rule["name"])
-        exact(rule["http"], {"metadata"})
-        exact(rule["http"]["metadata"], {"concurrentRequests"})
-        if not re.fullmatch(
-            r"[1-9][0-9]*", text(rule["http"]["metadata"]["concurrentRequests"])
-        ):
+    if scale["rules"] is not None:
+        if not isinstance(scale["rules"], list):
             raise BaselineError("APP_UNOBSERVABLE")
+        for rule in scale["rules"]:
+            exact(rule, {"name", "http"})
+            identifier(rule["name"])
+            exact(rule["http"], {"metadata"})
+            exact(rule["http"]["metadata"], {"concurrentRequests"})
+            if not re.fullmatch(
+                r"[1-9][0-9]*", text(rule["http"]["metadata"]["concurrentRequests"])
+            ):
+                raise BaselineError("APP_UNOBSERVABLE")
 
 
 def validate_environment(settings: Any) -> None:
@@ -470,6 +539,14 @@ def validate_environment(settings: Any) -> None:
             "AzureAd__ClientCredentials__0__ManagedIdentityClientId",
         ):
             uuid(value)
+        elif key == "AzureAd__Scope":
+            # The exposed-API scope is an api:// URI, not a bare identifier;
+            # validate the deterministic scope shape at this key alone so
+            # identifier() stays strict everywhere else.
+            if not re.fullmatch(
+                r"api://[a-zA-Z0-9][a-zA-Z0-9-]*/[a-zA-Z0-9_.-]+", value
+            ):
+                raise BaselineError("INVALID_IDENTITY")
         else:
             identifier(value)
     if (
@@ -495,17 +572,31 @@ def validate_app(app: Any) -> None:
             "environment_id",
             "workload_profile",
             "revision_suffix",
+            "identity_settings",
+            "runtime",
         },
     )
     resource_id(app["resource_id"])
     image_digest(app["image"])
     identifier(app["revision"])
     validate_environment(app["effective_environment"])
-    validate_identity(app["managed_identity"])
-    validate_ingress(app["ingress"])
-    exact(app["container_configuration"], {"name", "resources"})
+    # Canonical-storage assertions: a stored ingress or identity that does
+    # not already sit in canonical form would silently diverge from what a
+    # fresh live GET projects, so fail closed instead of comparing a mixed
+    # casing or shape.
+    if validate_identity(app["managed_identity"]) != app["managed_identity"]:
+        raise BaselineError("IDENTITY_UNOBSERVABLE")
+    if validate_ingress(app["ingress"]) != app["ingress"]:
+        raise BaselineError("APP_UNOBSERVABLE")
+    exact(app["container_configuration"], {"name", "resources", "probes"})
     identifier(app["container_configuration"]["name"])
     validate_resources(app["container_configuration"]["resources"])
+    if not list_of_objects(app["container_configuration"]["probes"]):
+        raise BaselineError("APP_UNOBSERVABLE")
+    if not list_of_objects(app["identity_settings"]):
+        raise BaselineError("APP_UNOBSERVABLE")
+    if app["runtime"] is not None and not isinstance(app["runtime"], dict):
+        raise BaselineError("APP_UNOBSERVABLE")
     validate_scale(app["scale"])
     resource_id(app["environment_id"])
     identifier(app["workload_profile"])
@@ -652,6 +743,8 @@ def app_projection(app: dict[str, Any]) -> dict[str, Any]:
         "dapr",
         "service",
         "maxInactiveRevisions",
+        "identitySettings",
+        "runtime",
     }:
         raise BaselineError("APP_UNOBSERVABLE")
     if configuration.get("registries"):
@@ -663,18 +756,48 @@ def app_projection(app: dict[str, Any]) -> dict[str, Any]:
     ):
         raise BaselineError("APP_UNOBSERVABLE")
     container = containers[0]
-    if set(container) - {"name", "image", "env", "resources"}:
+    if set(container) - {"name", "image", "env", "resources", "probes"}:
+        raise BaselineError("APP_UNOBSERVABLE")
+    # (a) Probes steer traffic to the revision; an empty list is ARM's
+    # none. Projected so configured probes ride into the baseline and any
+    # change to them drifts instead of passing silently.
+    if not list_of_objects(container.get("probes", [])):
         raise BaselineError("APP_UNOBSERVABLE")
     if (
         set(properties["template"])
-        - {"containers", "scale", "revisionSuffix", "volumes", "initContainers"}
+        - {
+            "containers",
+            "scale",
+            "revisionSuffix",
+            "volumes",
+            "initContainers",
+            "serviceBinds",
+            "terminationGracePeriodSeconds",
+        }
         or properties["template"].get("volumes")
         or properties["template"].get("initContainers")
     ):
         raise BaselineError("APP_UNOBSERVABLE")
-    if properties["configuration"].get("dapr", {}).get("enabled") or properties[
-        "configuration"
-    ].get("service"):
+    # (b) serviceBinds: a bind would mount another environment's service
+    # into this app; ARM's null is none, and any non-null value is a
+    # dependency this projection deliberately refuses to bless.
+    if properties["template"].get("serviceBinds"):
+        raise BaselineError("APP_UNOBSERVABLE")
+    # (b) terminationGracePeriodSeconds: the platform default applies
+    # implicitly; an explicit override changes shutdown behavior and fails
+    # closed instead of being dropped from the comparison.
+    if properties["template"].get("terminationGracePeriodSeconds") is not None:
+        raise BaselineError("APP_UNOBSERVABLE")
+    # dapr: ARM encodes a disabled sidecar as an explicit null; treat null
+    # as absence and fail on anything that would enable it.
+    dapr = configuration.get("dapr")
+    if dapr is None:
+        dapr = {}
+    if (
+        not isinstance(dapr, dict)
+        or dapr.get("enabled")
+        or configuration.get("service")
+    ):
         raise BaselineError("APP_UNOBSERVABLE")
     settings: dict[str, str] = {}
     for item in container.get("env", []):
@@ -686,8 +809,17 @@ def app_projection(app: dict[str, Any]) -> dict[str, Any]:
     settings.setdefault("OpenAI__DeploymentName", "chat")
     if set(settings) != set(ENV_KEYS):
         raise BaselineError("CONFIG_UNOBSERVABLE")
+    # secrets: ARM encodes no secrets as an explicit null; only versioned
+    # KeyVault URLs are projectable, and nothing else may appear.
+    declared_secrets = configuration.get("secrets")
+    if declared_secrets is None:
+        declared_secrets = []
+    if not isinstance(declared_secrets, list):
+        raise BaselineError("SECRET_VERSION_UNOBSERVABLE")
     secrets: dict[str, str] = {}
-    for item in properties["configuration"].get("secrets", []):
+    for item in declared_secrets:
+        if not isinstance(item, dict):
+            raise BaselineError("SECRET_VERSION_UNOBSERVABLE")
         url = text(item.get("keyVaultUrl"))
         if not re.fullmatch(
             r"https://[a-zA-Z0-9-]+\.vault\.azure\.net/secrets/[^/]+/[a-zA-Z0-9]+", url
@@ -698,32 +830,43 @@ def app_projection(app: dict[str, Any]) -> dict[str, Any]:
     if not re.fullmatch(r"[^@]+@sha256:[0-9a-f]{64}", image):
         raise BaselineError("APP_IMAGE")
     validate_environment(settings)
-    validate_ingress(configuration["ingress"])
+    # Sub-projections are canonicalized before embedding so validate_app
+    # re-validates exactly the stored form.
+    ingress = validate_ingress(configuration["ingress"])
     validate_scale(properties["template"]["scale"])
     validate_resources(container["resources"])
-    identity = app["identity"]
-    validate_identity(identity)
-    if identity.get("type") != "UserAssigned" or not identity.get(
-        "userAssignedIdentities"
-    ):
-        raise BaselineError("IDENTITY_UNOBSERVABLE")
+    identity = validate_identity(app["identity"])
     if properties["latestReadyRevisionName"] != properties["latestRevisionName"]:
         raise BaselineError("APP_NOT_READY")
+    # (a) identitySettings pin which identity may access which module;
+    # ARM's empty list is none. Projected whole so entries drift.
+    identity_settings = configuration["identitySettings"]
+    if not list_of_objects(identity_settings):
+        raise BaselineError("APP_UNOBSERVABLE")
+    # (a) runtime carries the app's runtime (e.g. docker) configuration;
+    # null is the platform default. Projected whole when present.
+    runtime = configuration["runtime"]
+    if runtime is not None and not isinstance(runtime, dict):
+        raise BaselineError("APP_UNOBSERVABLE")
     result = {
         "resource_id": text(app.get("id")),
         "image": image,
         "revision": text(properties.get("latestReadyRevisionName")),
         "effective_environment": settings,
         "managed_identity": identity,
-        "ingress": properties["configuration"]["ingress"],
+        "ingress": ingress,
         "secret_references": secrets,
         "container_configuration": {
-            key: container[key] for key in ("name", "resources")
+            "name": container["name"],
+            "resources": container["resources"],
+            "probes": container.get("probes", []),
         },
         "scale": properties["template"]["scale"],
         "environment_id": text(properties.get("managedEnvironmentId")),
         "workload_profile": text(properties.get("workloadProfileName")),
         "revision_suffix": properties["template"].get("revisionSuffix", ""),
+        "identity_settings": identity_settings,
+        "runtime": runtime,
     }
     validate_app(result)
     return result

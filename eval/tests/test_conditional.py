@@ -147,7 +147,7 @@ def unit(tmp_path, monkeypatch):
         "OpenAI__DeploymentName": "chat",
         "AzureAd__TenantId": tenant,
         "AzureAd__ClientId": af.API_CLIENT,
-        "AzureAd__Scope": "access_as_user",
+        "AzureAd__Scope": "api://demo-api/access_as_user",
         "AzureAd__ClientCredentials__0__SourceType": "SignedAssertionFromManagedIdentity",
         "AzureAd__ClientCredentials__0__ManagedIdentityClientId": identity_id,
         "Tickets__ServiceUri": "https://demotickets.table.core.windows.net/",
@@ -180,20 +180,38 @@ def unit(tmp_path, monkeypatch):
                 },
             },
             "ingress": {
-                "fqdn": "staging.example",
+                "additionalPortMappings": None,
+                "allowInsecure": False,
+                "clientCertificateMode": None,
+                "corsPolicy": None,
+                "customDomains": None,
+                "exposedPort": 0,
                 "external": True,
+                "fqdn": "staging.example",
+                "ipSecurityRestrictions": [],
+                "stickySessions": None,
                 "targetPort": 8080,
                 "traffic": [{"latestRevision": True, "weight": 100}],
+                "transport": "auto",
             },
             "secret_references": {},
             "container_configuration": {
                 "name": "api",
                 "resources": {"cpu": 0.25, "memory": "0.5Gi"},
+                "probes": [],
             },
-            "scale": {"minReplicas": 1, "maxReplicas": 2},
+            "scale": {
+                "minReplicas": 1,
+                "maxReplicas": 2,
+                "rules": None,
+                "cooldownPeriod": 300,
+                "pollingInterval": 30,
+            },
             "environment_id": root + "Microsoft.App/managedEnvironments/demo-env",
             "workload_profile": "Consumption",
             "revision_suffix": "",
+            "identity_settings": [],
+            "runtime": None,
         },
         "models": {
             role: {
@@ -857,13 +875,31 @@ def prospective_route(tmp_path, monkeypatch):
     responses = dict(authority_responses)
     for target in targets.values():
         app = plane["app"]
+        identity = app["managed_identity"]
+        # ARM GET answers the workload identity dictionary keys with the
+        # resourceGroups segment lowercased; mirror that raw wire shape so
+        # the projection's canonicalization is exercised end to end.
+        raw_identity = {
+            "type": identity["type"],
+            "userAssignedIdentities": {
+                resource.replace("/resourceGroups/", "/resourcegroups/"): binding
+                for resource, binding in identity["userAssignedIdentities"].items()
+            },
+        }
         responses[target["app_resource_id"]] = {
             "id": target["app_resource_id"],
-            "identity": app["managed_identity"],
+            "identity": raw_identity,
             "properties": {
                 "configuration": {
                     "activeRevisionsMode": "Single",
-                    "ingress": app["ingress"],
+                    "dapr": None,
+                    "identitySettings": app["identity_settings"],
+                    "ingress": dict(app["ingress"], transport="Auto"),
+                    "maxInactiveRevisions": 0,
+                    "registries": None,
+                    "runtime": app["runtime"],
+                    "secrets": None,
+                    "service": None,
                 },
                 "template": {
                     "containers": [
@@ -874,10 +910,16 @@ def prospective_route(tmp_path, monkeypatch):
                                 {"name": key, "value": value}
                                 for key, value in app["effective_environment"].items()
                             ],
+                            "probes": app["container_configuration"]["probes"],
                             "resources": app["container_configuration"]["resources"],
                         }
                     ],
+                    "initContainers": None,
+                    "revisionSuffix": app["revision_suffix"],
                     "scale": app["scale"],
+                    "serviceBinds": None,
+                    "terminationGracePeriodSeconds": None,
+                    "volumes": [],
                 },
                 "latestReadyRevisionName": app["revision"],
                 "latestRevisionName": app["revision"],
