@@ -10,6 +10,14 @@ on:
       - ".github/workflows/infra.yml"
       - ".github/workflows/infra-candidate.yml"
   workflow_dispatch:
+    inputs:
+      release_candidate:
+        description: >-
+          Release-candidate run: true applies the staging plan and
+          saves the demo plan for the release coordinator to apply;
+          false (default) stops after the plans.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -24,6 +32,8 @@ concurrency:
 jobs:
   infra:
     uses: ./.github/workflows/infra-candidate.yml
+    with:
+      release_candidate: ${{ inputs.release_candidate }}
     permissions:
       contents: read
       id-token: write
