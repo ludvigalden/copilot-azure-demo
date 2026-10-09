@@ -214,6 +214,7 @@ resource "azapi_data_plane_resource" "index" {
         name                = "embedding"
         type                = "Collection(Edm.Single)"
         searchable          = true
+        retrievable         = true
         dimensions          = 1536
         vectorSearchProfile = "${var.index_name}-profile"
       },
